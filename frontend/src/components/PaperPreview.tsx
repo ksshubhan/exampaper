@@ -378,7 +378,16 @@ function Section({ title, items }: { title: string; items: ReactNode[] }) {
 // --------------------------------------------------------------------------- #
 // Questions + answers (unchanged layout)
 // --------------------------------------------------------------------------- #
-function QuestionBlock({ item, number }: { item: Item; number: number }) {
+export function QuestionBlock({
+  item,
+  number,
+  showMarks = true,
+}: {
+  item: Item
+  number: number
+  /** False on a worksheet: no per-part brackets, no question total line. */
+  showMarks?: boolean
+}) {
   // A question worth 4+ marks starts on a fresh page so its (now generous)
   // working space isn't split across a page break. The first question already
   // opens a new page via the section, so only force it from the second on.
@@ -429,22 +438,24 @@ function QuestionBlock({ item, number }: { item: Item; number: number }) {
                 )}
                 {part.prompt}
               </p>
-              <AnswerLine part={part} showMarks={multiPart} />
+              <AnswerLine part={part} showMarks={showMarks && multiPart} />
             </div>
           ))}
         </div>
       </div>
       {/* Every question closes with its total, then a full-width rule. */}
-      <p className="mt-3 text-right text-xs font-semibold text-neutral-600">
-        (Total for Question {number} is {item.total_marks}{' '}
-        {item.total_marks === 1 ? 'mark' : 'marks'})
-      </p>
+      {showMarks && (
+        <p className="mt-3 text-right text-xs font-semibold text-neutral-600">
+          (Total for Question {number} is {item.total_marks}{' '}
+          {item.total_marks === 1 ? 'mark' : 'marks'})
+        </p>
+      )}
       <hr className="mt-2 w-full border-t border-neutral-400" />
     </article>
   )
 }
 
-function DataTable({ table }: { table: Table }) {
+export function DataTable({ table }: { table: Table }) {
   return (
     <figure className="my-5">
       {table.caption && (
@@ -551,7 +562,7 @@ function writingSpaceMm(marks: number): number {
   return 15 + 22 * marks
 }
 
-function AnswerLine({ part, showMarks }: { part: Part; showMarks: boolean }) {
+export function AnswerLine({ part, showMarks }: { part: Part; showMarks: boolean }) {
   const { prefix, unit } = answerFormat(part.answer)
   const mm = writingSpaceMm(part.marks)
   return (

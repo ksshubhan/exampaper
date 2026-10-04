@@ -6,33 +6,50 @@ import App from './App.tsx'
 import Home from './pages/Home.tsx'
 import About from './pages/About.tsx'
 import Pricing from './pages/Pricing.tsx'
-import QualificationGrid from './pages/QualificationGrid.tsx'
 import BoardGrid from './pages/BoardGrid.tsx'
 import SubjectGrid from './pages/SubjectGrid.tsx'
-import StudyView from './pages/StudyView.tsx'
+import PracticeChoice from './pages/PracticeChoice.tsx'
 import BuildPaper from './pages/BuildPaper.tsx'
+import BuildWorksheet from './pages/BuildWorksheet.tsx'
+import {
+  HomeRedirect,
+  PastPapersRedirect,
+  PracticeIndexRedirect,
+} from './pages/Redirects.tsx'
 
 const router = createBrowserRouter([
   {
     element: <App />,
     children: [
       { index: true, element: <Home /> },
-      // Static routes out-rank the :feature param, so these never bounce.
       { path: 'about', element: <About /> },
       { path: 'pricing', element: <Pricing /> },
-      // format -> qualification -> exam board -> subject -> study view
-      { path: ':feature', element: <QualificationGrid /> },
-      { path: ':feature/:qualification', element: <BoardGrid /> },
-      { path: ':feature/:qualification/:board', element: <SubjectGrid /> },
+
+      // qualification -> exam board -> subject -> kind -> builder
+      // The qualification picker lives on the homepage now.
+      { path: 'practice', element: <HomeRedirect /> },
+      { path: 'practice/:qualification', element: <BoardGrid /> },
+      { path: 'practice/:qualification/:board', element: <SubjectGrid /> },
       {
-        path: ':feature/:qualification/:board/:subject',
-        element: <StudyView />,
+        path: 'practice/:qualification/:board/:subject',
+        element: <PracticeChoice />,
       },
-      // Static 'build' segment out-ranks nothing here — it's a distinct depth.
       {
-        path: ':feature/:qualification/:board/:subject/build',
+        path: 'practice/:qualification/:board/:subject/paper',
         element: <BuildPaper />,
       },
+      {
+        path: 'practice/:qualification/:board/:subject/worksheet',
+        element: <BuildWorksheet />,
+      },
+
+      // Legacy entry points, kept so old links and bookmarks still resolve.
+      { path: 'past-papers', element: <PracticeIndexRedirect /> },
+      { path: 'past-papers/*', element: <PastPapersRedirect /> },
+      { path: 'worksheets', element: <PracticeIndexRedirect /> },
+      { path: 'worksheets/*', element: <PracticeIndexRedirect /> },
+
+      { path: '*', element: <HomeRedirect /> },
     ],
   },
 ])

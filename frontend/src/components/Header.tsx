@@ -1,16 +1,15 @@
 import type { ComponentType, SVGProps } from 'react'
 import { Link, useLocation } from 'react-router-dom'
+import { PRACTICE_PATH } from '../data/catalog'
 import { useTheme } from '../hooks/useTheme'
 import {
   AboutIcon,
   BracketsIcon,
   HomeIcon,
   MoonIcon,
-  PapersIcon,
   PricingIcon,
   SparkleIcon,
   SunIcon,
-  WorksheetIcon,
 } from './icons'
 
 type IconType = ComponentType<SVGProps<SVGSVGElement>>
@@ -23,18 +22,13 @@ interface NavItem {
 }
 
 const NAV: NavItem[] = [
-  { to: '/', label: 'Home', Icon: HomeIcon, isActive: (p) => p === '/' },
   {
-    to: '/past-papers',
-    label: 'Past Papers',
-    Icon: PapersIcon,
-    isActive: (p) => p === '/past-papers' || p.startsWith('/past-papers/'),
-  },
-  {
-    to: '/worksheets',
-    label: 'Worksheets',
-    Icon: WorksheetIcon,
-    isActive: (p) => p === '/worksheets' || p.startsWith('/worksheets/'),
+    to: '/',
+    label: 'Home',
+    Icon: HomeIcon,
+    // The homepage is the practice entry point, so it owns those routes too.
+    isActive: (p) =>
+      p === '/' || p === PRACTICE_PATH || p.startsWith(`${PRACTICE_PATH}/`),
   },
   { to: '/pricing', label: 'Pricing', Icon: PricingIcon, isActive: (p) => p === '/pricing' },
   { to: '/about', label: 'About', Icon: AboutIcon, isActive: (p) => p === '/about' },

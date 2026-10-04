@@ -11,18 +11,17 @@ import {
   type TierSlug,
 } from '../data/catalog'
 import Breadcrumb from '../components/Breadcrumb'
-import BuildBar from '../components/BuildBar'
 import TopicPicker from '../components/TopicPicker'
-import PaperPreview, {
-  MarkSchemeDocument,
-  PaperDocument,
-  PaperSheet,
-} from '../components/PaperPreview'
-import { generatePaper, getTopics, renderPdf } from '../lib/api'
+import { PaperSheet } from '../components/PaperPreview'
+import WorksheetDocument from '../components/WorksheetDocument'
+import { generateWorksheet, getTopics, renderPdf } from '../lib/api'
 import { PRESETS, isAvailable, type PresetId } from '../lib/topics'
-import type { Paper, TopicGroup } from '../lib/types'
+import type { TopicGroup, Worksheet } from '../lib/types'
 
-const MARK_PRESETS = [25, 40, 60, 80]
+const PER_TOPIC_PRESETS = [3, 5, 10]
+const DEFAULT_PER_TOPIC = 5
+/** Beyond this a worksheet stops being a worksheet (and the build gets slow). */
+const MAX_QUESTIONS = 60
 
 /** Serialize every same-origin stylesheet so the PDF renderer has our CSS. */
 function collectCss(): string {
@@ -48,7 +47,7 @@ function saveBlob(blob: Blob, filename: string) {
   URL.revokeObjectURL(url)
 }
 
-export default function BuildPaper() {
+export default function BuildWorksheet() {
   const { qualification, board, subject } = useParams()
   const qual = getQualification(qualification)
   const examBoard = getBoard(qualification, board)
@@ -60,10 +59,10 @@ export default function BuildPaper() {
   const [activePreset, setActivePreset] = useState<PresetId | null>(null)
   const [calculator, setCalculator] = useState(false)
   const [tier, setTier] = useState<TierSlug>('higher')
-  const [targetMarks, setTargetMarks] = useState(80)
+  const [perTopic, setPerTopic] = useState(DEFAULT_PER_TOPIC)
   const [includeAnswers, setIncludeAnswers] = useState(true)
 
-  const [paper, setPaper] = useState<Paper | null>(null)
+  const [worksheet, setWorksheet] = useState<Worksheet | null>(null)
   const [loading, setLoading] = useState(false)
   const [downloading, setDownloading] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -76,15 +75,14 @@ export default function BuildPaper() {
       )
   }, [])
 
-  // A non-calculator paper can't use calculator-only topics, and Foundation
+  // A non-calculator worksheet can't use calculator-only topics, and Foundation
   // stops at grade 5. Strands left with nothing drop out entirely.
   const visibleGroups = useMemo(() => {
     return groups
       .map((g) => ({
         ...g,
         topics: g.topics.filter(
-          (t) =>
-            (calculator || !t.requires_calculator) && isAvailable(t, tier),
+          (t) => (calculator || !t.requires_calculator) && isAvailable(t, tier),
         ),
       }))
       .filter((g) => g.topics.length > 0)
@@ -105,13 +103,17 @@ export default function BuildPaper() {
   }
 
   const base = practicePath(qual.slug, examBoard.slug, subj.slug)
+  const count = selected.size
+  const totalQuestions = count * perTopic
+  const overCap = totalQuestions > MAX_QUESTIONS
 
   // Any hand-made change to the selection means it is no longer a preset.
   function toggle(slug: string) {
     setActivePreset(null)
     setSelected((prev) => {
       const next = new Set(prev)
-      next.has(slug) ? next.delete(slug) : next.add(slug)
+      if (next.has(slug)) next.delete(slug)
+      else next.add(slug)
       return next
     })
   }
@@ -128,17 +130,23 @@ export default function BuildPaper() {
     })
   }
 
-  // A preset replaces the selection outright, drawn from what the current
-  // Paper type setting actually offers.
   function applyPreset(id: PresetId) {
     const preset = PRESETS[tier].find((p) => p.id === id)
     if (!preset) return
-    const slugs = visibleGroups
-      .flatMap((g) => g.topics)
-      .filter((t) => preset.match(t, tier))
-      .map((t) => t.slug)
-    setSelected(new Set(slugs))
+    setSelected(
+      new Set(
+        visibleGroups
+          .flatMap((g) => g.topics)
+          .filter((t) => preset.match(t, tier))
+          .map((t) => t.slug),
+      ),
+    )
     setActivePreset(id)
+  }
+
+  function clearSelection() {
+    setActivePreset(null)
+    setSelected(new Set())
   }
 
   // Keep what the new tier still offers; a preset no longer describes the
@@ -159,34 +167,21 @@ export default function BuildPaper() {
     })
   }
 
-  function clearSelection() {
-    setActivePreset(null)
-    setSelected(new Set())
-  }
-
-  // Marks come off every selected topic, including any the Paper type filter
-  // currently hides, so the summary matches what gets sent.
-  const selectedTopics = groups
-    .flatMap((g) => g.topics)
-    .filter((t) => selected.has(t.slug))
-
   async function handleGenerate() {
     setLoading(true)
     setError(null)
     try {
-      const result = await generatePaper({
-        // format is omitted: the backend already defaults it to the only
-        // value the frontend ever sent.
+      const result = await generateWorksheet({
         qualification: qual!.slug,
         board: examBoard!.slug,
         subject: subj!.slug,
         calculator,
         tier,
         topics: [...selected],
-        target_marks: targetMarks,
+        per_topic: perTopic,
         include_answers: includeAnswers,
       })
-      setPaper(result)
+      setWorksheet(result)
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Something went wrong.')
     } finally {
@@ -195,36 +190,27 @@ export default function BuildPaper() {
   }
 
   async function handleDownload() {
-    if (!paper) return
+    if (!worksheet) return
     setDownloading(true)
     setError(null)
     try {
       const css = collectCss()
-      // The question paper — never contains answers.
-      const paperHtml = renderToStaticMarkup(
+      const html = renderToStaticMarkup(
         <PaperSheet>
-          <PaperDocument paper={paper} />
+          <WorksheetDocument worksheet={worksheet} />
         </PaperSheet>,
       )
-      saveBlob(await renderPdf(paperHtml, css, 'paper.pdf'), 'paper.pdf')
-      // The mark scheme ships as its own separate PDF.
-      if (paper.include_answers) {
-        const schemeHtml = renderToStaticMarkup(
-          <PaperSheet>
-            <MarkSchemeDocument paper={paper} />
-          </PaperSheet>,
-        )
-        saveBlob(
-          await renderPdf(schemeHtml, css, 'mark-scheme.pdf'),
-          'mark-scheme.pdf',
-        )
-      }
+      saveBlob(await renderPdf(html, css, 'worksheet.pdf'), 'worksheet.pdf')
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Could not build the PDF.')
     } finally {
       setDownloading(false)
     }
   }
+
+  const questionCount = worksheet
+    ? worksheet.groups.reduce((n, g) => n + g.questions.length, 0)
+    : 0
 
   return (
     <div className="mx-auto max-w-3xl px-5 py-8">
@@ -238,16 +224,16 @@ export default function BuildPaper() {
               to: practicePath(qual.slug, examBoard.slug),
             },
             { label: subj.name, to: base },
-            { label: 'Build a paper' },
+            { label: 'Build a worksheet' },
           ]}
         />
 
         <h1 className="mt-4 text-2xl font-semibold tracking-tight">
-          Build a custom paper
+          Build a worksheet
         </h1>
         <p className="mt-1 text-sm text-[var(--muted)]">
-          Pick a quick start or choose your own topics. We assemble an original{' '}
-          {examBoard.name} {qual.name} {subj.name} paper, ramped easy to hard.
+          Pick topics and how many questions you want on each. Every answer is
+          checked before it reaches you.
         </p>
 
         {/* Options */}
@@ -271,13 +257,13 @@ export default function BuildPaper() {
             onChange={(v) => setCalculator(v === 'calc')}
           />
           <Segmented
-            label="Length"
-            value={String(targetMarks)}
-            options={MARK_PRESETS.map((m) => ({
-              value: String(m),
-              label: `${m} marks`,
+            label="Questions per topic"
+            value={String(perTopic)}
+            options={PER_TOPIC_PRESETS.map((n) => ({
+              value: String(n),
+              label: String(n),
             }))}
-            onChange={(v) => setTargetMarks(Number(v))}
+            onChange={(v) => setPerTopic(Number(v))}
           />
           <label className="flex items-center gap-2 text-sm">
             <input
@@ -286,7 +272,7 @@ export default function BuildPaper() {
               onChange={(e) => setIncludeAnswers(e.target.checked)}
               className="h-4 w-4 accent-[var(--accent)]"
             />
-            Include answers &amp; mark scheme
+            Include answers
           </label>
         </div>
 
@@ -304,31 +290,72 @@ export default function BuildPaper() {
           onSetTopics={setTopics}
         />
 
-        <BuildBar
-          selectedTopics={selectedTopics}
-          calculator={calculator}
-          tier={tier}
-          loading={loading}
-          hasPaper={paper !== null}
-          onClear={clearSelection}
-          onGenerate={handleGenerate}
-        />
+        {/* Sticky summary + action */}
+        <div className="sticky bottom-4 z-10 rounded-2xl border border-[var(--border)] bg-[var(--surface)] p-4 shadow-lg">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div className="min-w-0">
+              {count > 0 ? (
+                <>
+                  <p className="font-semibold">
+                    {count} topic{count === 1 ? '' : 's'} selected
+                  </p>
+                  <p className="mt-0.5 text-sm text-[var(--muted)]">
+                    {totalQuestions} questions · {perTopic} per topic ·{' '}
+                    {calculator ? 'Calculator' : 'Non-calculator'} ·{' '}
+                    {tier === 'higher' ? 'Higher' : 'Foundation'}
+                  </p>
+                </>
+              ) : (
+                <>
+                  <p className="font-semibold">No topics selected</p>
+                  <p className="mt-0.5 text-sm text-[var(--muted)]">
+                    Pick a quick start above, or choose topics.
+                  </p>
+                </>
+              )}
+            </div>
+
+            <div className="flex items-center gap-1">
+              {count > 0 && (
+                <button
+                  type="button"
+                  onClick={clearSelection}
+                  className="min-h-11 rounded-xl px-3 text-sm font-medium text-[var(--muted)] transition hover:text-[var(--text)]"
+                >
+                  Clear
+                </button>
+              )}
+              <button
+                type="button"
+                onClick={handleGenerate}
+                disabled={count === 0 || overCap || loading}
+                className="min-h-11 rounded-xl bg-[var(--accent)] px-5 text-sm font-semibold text-[var(--accent-text)] transition active:scale-[0.99] disabled:cursor-not-allowed disabled:bg-[var(--border)] disabled:text-[var(--muted)] disabled:active:scale-100"
+              >
+                Generate worksheet
+              </button>
+            </div>
+          </div>
+
+          {overCap && (
+            <p className="mt-3 text-sm text-red-500">
+              Maximum {MAX_QUESTIONS} questions. Choose fewer topics or fewer per
+              topic.
+            </p>
+          )}
+        </div>
 
         {error && <p className="mt-3 text-sm text-red-500">{error}</p>}
 
-        {paper && paper.notes.length > 0 && (
-          <div className="mt-5 rounded-xl border border-amber-300 bg-amber-50 p-4 text-sm text-amber-900">
-            {paper.notes.map((n, i) => (
-              <p key={i}>{n}</p>
-            ))}
-          </div>
+        {worksheet?.skipped_topics && worksheet.skipped_topics.length > 0 && (
+          <p className="mt-3 text-sm text-[var(--muted)]">
+            Not available at Foundation: {worksheet.skipped_topics.join(', ')}
+          </p>
         )}
 
-        {paper && paper.questions.length > 0 && (
+        {worksheet && questionCount > 0 && (
           <div className="mt-6 flex items-center justify-between">
             <p className="text-sm text-[var(--muted)]">
-              {paper.questions.length} questions · {paper.total_marks} marks ·{' '}
-              {paper.duration_minutes} min
+              {questionCount} questions · {worksheet.groups.length} topics
             </p>
             <button
               type="button"
@@ -336,19 +363,17 @@ export default function BuildPaper() {
               disabled={downloading}
               className="rounded-xl bg-[var(--accent)] px-5 py-3 text-sm font-semibold text-[var(--accent-text)] transition hover:opacity-90 disabled:opacity-50"
             >
-              {downloading
-                ? 'Preparing PDF…'
-                : paper.include_answers
-                  ? 'Download paper + mark scheme'
-                  : 'Download paper PDF'}
+              {downloading ? 'Preparing PDF…' : 'Download worksheet PDF'}
             </button>
           </div>
         )}
       </div>
 
-      {paper && paper.questions.length > 0 && (
+      {worksheet && questionCount > 0 && (
         <div className="mt-6">
-          <PaperPreview paper={paper} />
+          <PaperSheet>
+            <WorksheetDocument worksheet={worksheet} />
+          </PaperSheet>
         </div>
       )}
     </div>

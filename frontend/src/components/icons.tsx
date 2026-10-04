@@ -95,3 +95,28 @@ export function SparkleIcon(p: SVGProps<SVGSVGElement>) {
     </Svg>
   )
 }
+
+export function CheckIcon(p: SVGProps<SVGSVGElement>) {
+  return (
+    <Svg {...p}>
+      <path d="M20 6 9 17l-5-5" />
+    </Svg>
+  )
+}
+
+export function SearchIcon(p: SVGProps<SVGSVGElement>) {
+  return (
+    <Svg {...p}>
+      <circle cx="11" cy="11" r="7" />
+      <path d="m20 20-3.6-3.6" />
+    </Svg>
+  )
+}
+
+export function ChevronDownIcon(p: SVGProps<SVGSVGElement>) {
+  return (
+    <Svg {...p}>
+      <path d="m6 9 6 6 6-6" />
+    </Svg>
+  )
+}

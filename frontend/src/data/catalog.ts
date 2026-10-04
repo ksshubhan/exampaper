@@ -1,10 +1,12 @@
-// Single source of truth for the past-papers / worksheets hierarchy:
-//   format  ->  qualification  ->  exam board  ->  subject
+// Single source of truth for the practice hierarchy:
+//   qualification  ->  exam board  ->  subject  ->  kind
 // Slugs live in the URL; display names are derived from here.
 
-export type FormatSlug = 'past-papers' | 'worksheets'
+/** What you can build for a subject. The URL's final segment. */
+export type KindSlug = 'paper' | 'worksheet'
 export type QualificationSlug = 'gcse' | 'a-level' | 'igcse'
 export type BoardSlug = 'aqa' | 'edexcel' | 'ocr' | 'wjec' | 'cie'
+export type TierSlug = 'foundation' | 'higher'
 export type SubjectSlug =
   | 'maths'
   | 'english-language'
@@ -14,14 +16,6 @@ export type SubjectSlug =
   | 'physics'
   | 'history'
   | 'geography'
-
-export interface Format {
-  slug: FormatSlug
-  /** Heading / breadcrumb label, e.g. "Past papers". */
-  featureTitle: string
-  /** Singular label for tabs and cards, e.g. "Past paper". */
-  label: string
-}
 
 export interface Qualification {
   slug: QualificationSlug
@@ -39,10 +33,58 @@ export interface Subject {
   name: string
 }
 
-export const FORMATS: Format[] = [
-  { slug: 'past-papers', featureTitle: 'Past papers', label: 'Past paper' },
-  { slug: 'worksheets', featureTitle: 'Worksheets', label: 'Worksheet' },
-]
+// ---------------------------------------------------------------------------
+// What ExamPaper actually supports today.
+//
+// This is the ONE place that decides it. Everything in the catalog that isn't
+// listed here renders as a non-interactive "Coming soon" card, and deep links
+// to it bounce back to the Practice page. To ship a new qualification, board,
+// subject, tier or kind, add its slug to the matching line below — that is the
+// whole change.
+export const SUPPORTED: {
+  qualifications: QualificationSlug[]
+  boards: BoardSlug[]
+  subjects: SubjectSlug[]
+  tiers: TierSlug[]
+  kinds: KindSlug[]
+} = {
+  qualifications: ['gcse'],
+  boards: ['edexcel'],
+  subjects: ['maths'],
+  tiers: ['foundation', 'higher'],
+  kinds: ['paper', 'worksheet'],
+}
+
+/** Root of the practice flow, and where an unsupported deep link lands. */
+export const PRACTICE_PATH = '/practice'
+
+/** Build a path under /practice from already-validated slugs. */
+export function practicePath(...segments: string[]): string {
+  return [PRACTICE_PATH, ...segments].join('/')
+}
+
+/**
+ * True when every slug supplied is one we support. Omitted keys aren't
+ * checked, so this serves both a single card (`{ board }`) and a whole route
+ * (`{ qualification, board, subject }`).
+ */
+export function isSupported(selection: {
+  qualification?: QualificationSlug
+  board?: BoardSlug
+  subject?: SubjectSlug
+  tier?: TierSlug
+  kind?: KindSlug
+}): boolean {
+  const { qualification, board, subject, tier, kind } = selection
+  return (
+    (qualification === undefined ||
+      SUPPORTED.qualifications.includes(qualification)) &&
+    (board === undefined || SUPPORTED.boards.includes(board)) &&
+    (subject === undefined || SUPPORTED.subjects.includes(subject)) &&
+    (tier === undefined || SUPPORTED.tiers.includes(tier)) &&
+    (kind === undefined || SUPPORTED.kinds.includes(kind))
+  )
+}
 
 export const QUALIFICATIONS: Qualification[] = [
   {
@@ -89,10 +131,6 @@ export const SUBJECTS: Subject[] = [
   { slug: 'history', name: 'History' },
   { slug: 'geography', name: 'Geography' },
 ]
-
-export function getFormat(slug: string | undefined): Format | undefined {
-  return FORMATS.find((f) => f.slug === slug)
-}
 
 export function getQualification(
   slug: string | undefined,

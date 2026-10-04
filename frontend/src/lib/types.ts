@@ -58,17 +58,6 @@ export interface Item {
   metadata: Metadata
 }
 
-export interface GenerateRequest {
-  format: string
-  qualification: string
-  board: string
-  subject: string
-  archetype?: string
-  variant?: 'hypotenuse' | 'shorter-side'
-  calculator?: boolean
-  seed?: number
-}
-
 // --- Paper assembly (Phase A backend) ---
 
 export interface Topic {
@@ -116,5 +105,44 @@ export interface GeneratePaperRequest {
   topics: string[]
   target_marks?: number
   include_answers?: boolean
+  seed?: number
+}
+
+// --- Worksheets ---
+
+export interface GenerateWorksheetRequest {
+  qualification?: string
+  board?: string
+  subject?: string
+  tier?: 'foundation' | 'higher'
+  calculator?: boolean
+  topics: string[]
+  per_topic?: number
+  include_answers?: boolean
+  seed?: number
+}
+
+/** One topic's run of questions, easy to hard. */
+export interface WorksheetGroup {
+  topic: string
+  topic_slug: string
+  strand: string
+  questions: Item[]
+}
+
+export interface Worksheet {
+  id: string
+  qualification?: string
+  board?: string
+  subject?: string
+  title?: string
+  tier: 'foundation' | 'higher'
+  calculator: boolean
+  per_topic: number
+  include_answers: boolean
+  groups: WorksheetGroup[]
+  /** Chosen topics with nothing generatable for this tier / paper type. */
+  skipped_topics?: string[]
+  notes?: string[]
   seed?: number
 }

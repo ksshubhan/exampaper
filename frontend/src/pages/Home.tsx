@@ -1,26 +1,22 @@
-import { Link } from 'react-router-dom'
-import { FORMATS } from '../data/catalog'
+import QualificationCards from '../components/QualificationCards'
 
 export default function Home() {
   return (
-    <div className="mx-auto max-w-3xl px-5 py-12">
-      <h1 className="text-3xl font-semibold tracking-tight sm:text-4xl">
-        ExamPaper
+    <div className="mx-auto max-w-5xl px-5 py-10">
+      {/* Slim hero: the qualification cards have to stay above the fold on a
+          1280x800 screen, so the spacing here is deliberately tight. */}
+      <h1 className="max-w-2xl text-3xl font-semibold tracking-tight sm:text-4xl">
+        Original exam-style papers on the topics you choose
       </h1>
       <p className="mt-3 max-w-xl text-lg text-[var(--muted)]">
-        Original past papers and worksheets, generated for your exam board.
+        Every answer is checked automatically. Mark scheme included.
       </p>
-
-      <div className="mt-10 grid gap-4 sm:grid-cols-2">
-        {FORMATS.map((f) => (
-          <Link
-            key={f.slug}
-            to={`/${f.slug}`}
-            className="flex min-h-28 items-center justify-center rounded-2xl border border-[var(--border)] bg-[var(--surface)] text-xl font-semibold text-[var(--text)] shadow-sm transition hover:border-[var(--muted)] active:scale-[0.99]"
-          >
-            {f.featureTitle}
-          </Link>
-        ))}
+      {/* Even gaps: subtitle -> heading -> cards. */}
+      <h2 className="mt-4 text-xl font-semibold tracking-tight">
+        Choose your qualification
+      </h2>
+      <div className="mt-4">
+        <QualificationCards />
       </div>
     </div>
   )

@@ -1,23 +1,10 @@
 import type {
-  GenerateRequest,
   GeneratePaperRequest,
-  Item,
+  GenerateWorksheetRequest,
   Paper,
   TopicGroup,
+  Worksheet,
 } from './types'
-
-/** Generate one question. Calls the FastAPI backend via the Vite /api proxy. */
-export async function generateItem(req: GenerateRequest): Promise<Item> {
-  const res = await fetch('/api/generate', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(req),
-  })
-  if (!res.ok) {
-    throw new Error(`Generation failed (${res.status})`)
-  }
-  return (await res.json()) as Item
-}
 
 /** Fetch the pickable topics, grouped by strand. */
 export async function getTopics(): Promise<TopicGroup[]> {
@@ -56,4 +43,19 @@ export async function generatePaper(req: GeneratePaperRequest): Promise<Paper> {
     throw new Error(`Paper generation failed (${res.status})`)
   }
   return (await res.json()) as Paper
+}
+
+/** Build a worksheet: N verified questions per chosen topic, grouped by topic. */
+export async function generateWorksheet(
+  req: GenerateWorksheetRequest,
+): Promise<Worksheet> {
+  const res = await fetch('/api/generate-worksheet', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(req),
+  })
+  if (!res.ok) {
+    throw new Error(`Worksheet generation failed (${res.status})`)
+  }
+  return (await res.json()) as Worksheet
 }

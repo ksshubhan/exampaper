@@ -6,9 +6,9 @@ export default function About() {
       <BackLink to="/">Home</BackLink>
       <h1 className="mt-4 text-2xl font-semibold tracking-tight">About</h1>
       <p className="mt-3 max-w-xl text-[var(--muted)]">
-        ExamPaper generates original past papers and worksheets tailored to your
-        exam board — practice material that mirrors the real thing without ever
-        reusing a question.
+        ExamPaper generates original practice papers tailored to your exam
+        board — material that mirrors the real thing without ever reusing a
+        question.
       </p>
     </div>
   )
