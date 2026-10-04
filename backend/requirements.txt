@@ -7,3 +7,4 @@ sympy>=1.13
 # none of the browser print dialog's injected headers/footers.
 playwright>=1.40
 pypdf>=4.0  # pad the paper to an even page count (printed double-sided)
+python-dotenv>=1.0  # load backend/.env; arrives via uvicorn[standard] too

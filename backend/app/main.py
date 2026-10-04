@@ -1,17 +1,20 @@
-"""ExamPaper question-generation API.
+"""ExamPaper API.
 
-Phase 0: a single `/generate` endpoint returning a stub Pythagoras item, so the
-frontend Generate button has a live round-trip to build against.
+Every route lives on one `/api`-prefixed router, so a path is spelled the same
+by the browser, by the Vite dev proxy (which forwards `/api` without rewriting
+it) and by anything calling the backend directly — a Stripe CLI webhook forward,
+say, which never passes through Vite at all.
 """
 
 from __future__ import annotations
 
-from fastapi import FastAPI, Response
+from fastapi import APIRouter, FastAPI, Response
 from fastapi.concurrency import run_in_threadpool
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
 from .assembler import build_paper
+from .config import get_settings
 from .generators.registry import get_generator, topics_catalog
 from .pdf import render_pdf
 from .schema import GeneratePaperRequest, GenerateRequest, Item, Paper
@@ -19,34 +22,36 @@ from .schema import GeneratePaperRequest, GenerateRequest, Item, Paper
 app = FastAPI(title="ExamPaper API", version="0.0.1")
 
 # The Vite dev server proxies /api -> here, so same-origin in practice. CORS is
-# kept permissive in dev as a safety net for direct calls.
+# a safety net for direct calls; the allowed origin follows FRONTEND_URL.
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173"],
+    allow_origins=[get_settings().frontend_url],
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
+api = APIRouter(prefix="/api")
 
-@app.get("/health")
+
+@api.get("/health")
 def health() -> dict[str, str]:
     return {"status": "ok"}
 
 
-@app.post("/generate", response_model=Item)
+@api.post("/generate", response_model=Item)
 def generate(req: GenerateRequest) -> Item:
     """Generate one question for the given context."""
     generator = get_generator(req.archetype)
     return generator(req)
 
 
-@app.get("/topics")
+@api.get("/topics")
 def topics() -> list[dict]:
     """Pickable topics grouped by strand, each with an archetype count."""
     return topics_catalog()
 
 
-@app.post("/generate-paper", response_model=Paper)
+@api.post("/generate-paper", response_model=Paper)
 def generate_paper(req: GeneratePaperRequest) -> Paper:
     """Assemble a full custom paper from the chosen topics."""
     return build_paper(req)
@@ -60,7 +65,7 @@ class RenderPdfRequest(BaseModel):
     filename: str = "paper.pdf"
 
 
-@app.post("/render-pdf")
+@api.post("/render-pdf")
 async def render_pdf_endpoint(req: RenderPdfRequest) -> Response:
     """Print a paper (or mark scheme) to a clean, chrome-free A4 PDF.
 
@@ -73,3 +78,6 @@ async def render_pdf_endpoint(req: RenderPdfRequest) -> Response:
         media_type="application/pdf",
         headers={"Content-Disposition": f'attachment; filename="{req.filename}"'},
     )
+
+
+app.include_router(api)
