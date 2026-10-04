@@ -21,13 +21,32 @@ Kickoff prompt for each section:
 - Access is granted **by the webhook**, never by the success redirect.
 - Every generated PDF carries a watermark footer with the account email and date.
 
+Added after the Section 0 audit:
+
+- **All backend routes live under an `APIRouter` with prefix `/api`**, and the
+  `rewrite` is removed from `frontend/vite.config.ts`. Frontend call sites keep
+  their existing `/api/...` paths. Done as Section 0.5, below.
+- **CORS reads `FRONTEND_URL`** instead of the hardcoded `http://localhost:5173`.
+- **`POST /api/generate-worksheet` is out of scope for this spec.** It does not
+  exist yet. Sections 2 and 4 apply to `POST /api/generate-paper` only. The limit
+  is built as a reusable dependency (`reserve_generation`) so the worksheet route
+  can adopt it in one line once it is written.
+- **`/api/render-pdf` requires auth**, and the watermark is applied server-side
+  from the authenticated user's email — never from the request body. See Section 7.
+- **`.gitignore` needs `!.env.example`**, because the existing `.env.*` pattern
+  would otherwise ignore the example file.
+
 ## Fences (all sections)
 
 - Do not touch `probe.py` or `.venv`.
 - Do not change question generation, sympy verification, blueprint logic, or diagram code.
-- Only change `PaperPreview.tsx` / its stylesheet in Section 7, and only to add the footer.
+- Only change `PaperPreview.tsx` / `WorksheetDocument.tsx` / the print stylesheet in
+  Section 7. The footer itself is server-side, so these may need no change at all;
+  touch them only if page-break or margin spacing has to make room for it.
 - No secrets in code. All keys come from env vars listed below.
 - No new paid services beyond Clerk and Stripe.
+- Do not change the Vite proxy target or add proxy entries beyond removing the
+  `rewrite` in Section 0.5.
 
 ## Env vars (exact names)
 
@@ -47,7 +66,9 @@ Frontend `.env`:
 ```
 VITE_CLERK_PUBLISHABLE_KEY=
 ```
-Add both to `.env.example` with empty values. Make sure `.env` is in `.gitignore`.
+Add both to `.env.example` with empty values. `.env` is already in `.gitignore`,
+but the existing `.env.*` pattern also matches `.env.example` — add `!.env.example`
+so the example file is committable.
 
 ## Before you start (me, not Claude Code)
 
@@ -70,6 +91,31 @@ Report:
 - Router setup and where nav lives.
 
 Done when: a written report in chat, plus a proposed file list for Sections 1–7. **No files changed** (`git status` clean).
+
+---
+
+## Section 0.5 — Route prefix + CORS config
+
+Goal: the backend owns the `/api` prefix, so paths are the same in dev and prod.
+
+Audit findings this fixes: all five routes are bare `@app.<verb>` decorators in
+`backend/app/main.py` with no prefix, and `frontend/vite.config.ts` strips `/api`
+with `rewrite: (path) => path.replace(/^\/api/, '')`. That strip would have made
+Section 5's `stripe listen --forward-to localhost:8000/api/stripe/webhook`
+unreachable, since the Stripe CLI bypasses Vite.
+
+- Move every route onto an `APIRouter(prefix="/api")` and `include_router` it, so
+  the backend serves `/api/health`, `/api/generate`, `/api/topics`,
+  `/api/generate-paper`, `/api/render-pdf`.
+- Delete the `rewrite` line from the `/api` proxy entry in `frontend/vite.config.ts`.
+  Leave the target and `changeOrigin` alone. No frontend call site changes.
+- Replace the hardcoded CORS origin with `FRONTEND_URL` (default
+  `http://localhost:5173`). This is the first env var read, so add
+  `backend/app/config.py` and `python-dotenv` here.
+
+Done when: `pytest` passes (the existing 42 tests are unit-level and should be
+untouched), and in dev a paper generates end to end through the proxy — pick
+topics, Generate, download the PDF.
 
 ---
 
@@ -110,7 +156,9 @@ Goal: every protected endpoint knows the current user.
   - finds the `users` row by `clerk_user_id`, **creating it on first sight** (fetch email from Clerk if not in the token),
   - returns 401 with `{"detail": {"code": "auth_required"}}` if missing/invalid.
 - `GET /api/me` → `{"email", "plan", "total_generations", "day_generations", "free_limit", "daily_limit"}`.
-- Apply `get_current_user` to the paper and worksheet generation endpoints.
+  (Backend route is `/me` on the `/api`-prefixed router from Section 0.5.)
+- Apply `get_current_user` to `POST /api/generate-paper` and `POST /api/render-pdf`.
+  (`POST /api/generate-worksheet` does not exist — out of scope, see Decisions.)
 
 Done when: `pytest tests/test_auth.py` passes, covering: no header → 401 `auth_required`; bad token → 401; valid token (mock JWKS) → user created once, second call reuses the same row.
 
@@ -134,6 +182,11 @@ Done when: `npm run build` passes and, manually, signing in with Google in dev c
 
 Goal: free users get exactly 1 generation; monthly users get 10/day; no races.
 
+Expose this as a **reusable FastAPI dependency `reserve_generation`**, applied to
+`POST /api/generate-paper` only for now. `POST /api/generate-worksheet` is out of
+scope for this spec; when it is written it adopts the same dependency in one line.
+Keep the refund path callable from the route handler, not buried in the dependency.
+
 - **Reserve a slot before generating**, in a single atomic SQL `UPDATE … RETURNING`:
   - free: succeed only if `total_generations < FREE_GENERATION_LIMIT`.
   - monthly: if `day_date` ≠ today (Europe/London), reset `day_generations` to 0 and set `day_date`; succeed only if `day_generations < DAILY_GENERATION_LIMIT`.
@@ -142,7 +195,11 @@ Goal: free users get exactly 1 generation; monthly users get 10/day; no races.
 - Responses when the reservation fails (exact bodies):
   - free user over limit → **HTTP 402** `{"detail": {"code": "upgrade_required"}}`
   - monthly user over daily cap → **HTTP 429** `{"detail": {"code": "daily_limit_reached"}}`
-- Paper and worksheet count the same. The mark scheme for a paper is part of that paper, not a separate generation. Re-downloading an already generated paper costs nothing.
+- Paper and worksheet will count the same once the worksheet route exists. The mark
+  scheme for a paper is part of that paper, not a separate generation.
+  Re-downloading an already generated paper costs nothing — generation and PDF
+  rendering are separate round-trips (`/api/generate-paper` then `/api/render-pdf`),
+  and only the former reserves a slot.
 
 Done when: `pytest tests/test_limits.py` passes, covering: free 1st → 200, 2nd → 402; generation failure refunds; 10 concurrent requests from one free user → exactly 1 succeeds; monthly 10 → 200, 11th → 429; next day resets.
 
@@ -197,15 +254,38 @@ Done when: `npm run build` passes, and manually in test mode: generate once → 
 
 ---
 
-## Section 7 — PDF watermark
+## Section 7 — PDF watermark (and render hardening)
 
-Goal: every generated PDF page carries a footer.
+Goal: every generated PDF page carries a footer, and rendering is not an open proxy.
 
-- Footer text, exact format: `Generated for {email} · {d MMM yyyy}` e.g. `Generated for jane@example.com · 5 Oct 2026`.
-- Small, grey, centred at the bottom of every page of both paper and mark scheme. Must not overlap question content or the existing print headers.
-- Email passed from the authenticated user into the render; never from a query param.
+This section is a security boundary, not cosmetics. `POST /api/render-pdf` currently
+takes arbitrary HTML and CSS from the request body and runs it through headless
+Chromium with no auth — anything that can reach it can render whatever it likes.
 
-Done when: `pytest tests/test_watermark.py` passes — generate a paper as a test user, extract PDF text, assert every page contains `Generated for test@example.com`.
+- **`/api/render-pdf` requires auth** (`get_current_user`). It does not reserve a
+  generation slot: re-downloading is free.
+- **The footer is applied server-side** in `backend/app/pdf.py`, via Playwright's
+  `footer_template`, using the email from the authenticated user. The email and the
+  footer markup are **never** read from the request body or a query param — a caller
+  must not be able to forge or omit them.
+- Footer text, exact format: `Generated for {email} · {d MMM yyyy}` e.g.
+  `Generated for jane@example.com · 5 Oct 2026`. Small, grey, centred at the bottom
+  of every page. Must not overlap question content or collide with the existing
+  bare page numeral, which sits bottom-right.
+- **Block all network access during render**: `page.route("**/*", ...)` aborting
+  every request whose URL scheme is not `data:` or `about:`. Diagrams are inline
+  SVG and styles arrive in the request body, so a correct render needs no network.
+  This also stops `set_content(..., wait_until="networkidle")` hanging on a
+  hostile external reference.
+- Applies to **both** documents: `PaperPreview.tsx` (paper and mark scheme) and
+  `WorksheetDocument.tsx`. Because the footer is now server-side, neither component
+  should need a footer element — if the page-margin budget in `pdf.py` has to grow
+  to fit the extra footer line, that margin change is the only `pdf.py` layout edit.
+
+Done when: `pytest tests/test_watermark.py` passes — generate a paper as a test
+user, extract PDF text, assert every page contains `Generated for test@example.com`;
+plus `/api/render-pdf` with no `Authorization` header returns 401, and a body whose
+HTML references an external URL still renders (that request aborted, no hang).
 
 ---
 
