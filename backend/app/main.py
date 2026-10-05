@@ -8,14 +8,16 @@ say, which never passes through Vite at all.
 
 from __future__ import annotations
 
-from fastapi import APIRouter, FastAPI, Response
+from fastapi import APIRouter, Depends, FastAPI, Response
 from fastapi.concurrency import run_in_threadpool
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
 from .assembler import build_paper
+from .auth import get_current_user
 from .config import get_settings
 from .generators.registry import get_generator, topics_catalog
+from .models import User
 from .pdf import render_pdf
 from .schema import GeneratePaperRequest, GenerateRequest, Item, Paper
 
@@ -45,6 +47,20 @@ def generate(req: GenerateRequest) -> Item:
     return generator(req)
 
 
+@api.get("/me")
+def me(user: User = Depends(get_current_user)) -> dict:
+    """The signed-in account: who they are, their plan, and their allowances."""
+    settings = get_settings()
+    return {
+        "email": user.email,
+        "plan": user.plan,
+        "total_generations": user.total_generations,
+        "day_generations": user.day_generations,
+        "free_limit": settings.free_generation_limit,
+        "daily_limit": settings.daily_generation_limit,
+    }
+
+
 @api.get("/topics")
 def topics() -> list[dict]:
     """Pickable topics grouped by strand, each with an archetype count."""
@@ -52,8 +68,15 @@ def topics() -> list[dict]:
 
 
 @api.post("/generate-paper", response_model=Paper)
-def generate_paper(req: GeneratePaperRequest) -> Paper:
-    """Assemble a full custom paper from the chosen topics."""
+def generate_paper(
+    req: GeneratePaperRequest,
+    user: User = Depends(get_current_user),
+) -> Paper:
+    """Assemble a full custom paper from the chosen topics.
+
+    Authenticated, but not yet rate-limited — Section 4 reserves a generation
+    slot here.
+    """
     return build_paper(req)
 
 
@@ -66,7 +89,10 @@ class RenderPdfRequest(BaseModel):
 
 
 @api.post("/render-pdf")
-async def render_pdf_endpoint(req: RenderPdfRequest) -> Response:
+async def render_pdf_endpoint(
+    req: RenderPdfRequest,
+    user: User = Depends(get_current_user),
+) -> Response:
     """Print a paper (or mark scheme) to a clean, chrome-free A4 PDF.
 
     The client renders the document to HTML and hands us its CSS; we run it
