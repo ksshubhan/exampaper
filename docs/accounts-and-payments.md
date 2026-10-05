@@ -289,6 +289,41 @@ HTML references an external URL still renders (that request aborted, no hang).
 
 ---
 
+## Pre-deploy gates
+
+Must ship before the site is public. Not optional, and not "later.md".
+
+### Attempt cap
+
+Section 4 refunds a generation slot when the client disconnects mid-generation,
+so a paper nobody receives is not charged for. That is right for a parent who
+closes the tab — and it is a hole: a script can loop generate → disconnect →
+generate for unbounded compute at no cost to itself, because the *reserved* slot
+comes straight back every time. Today that is CPU in the assembler; it is
+per-token spend the moment any generation step goes through a model.
+
+Count attempts separately from successes, and never refund an attempt.
+
+- Add to `users`: `day_attempts` int not null default 0, `attempt_date` date null
+  (Europe/London, same rebase-on-a-new-day rule as `day_date`).
+- `MAX_DAILY_ATTEMPTS=20` (env var, backend `.env` + `.env.example`). Applies to
+  **every** plan, free and monthly alike — it is an abuse ceiling, not an
+  allowance, and it sits above the monthly plan's fair-use cap of 10 so a paying
+  customer never meets it in normal use.
+- Increment it in the same atomic `UPDATE` that reserves the slot, so an attempt
+  is recorded before any work starts. `reservation.refund()` must not touch it.
+- Over the cap → **HTTP 429** `{"detail": {"code": "too_many_attempts"}}`,
+  checked before the plan's own limit so a free user who is looping gets
+  `too_many_attempts`, not `upgrade_required`.
+- Frontend: treat it like `daily_limit_reached` — a plain inline message, no
+  upgrade popup. An upsell is the wrong answer to suspected abuse.
+
+Done when: a test reserves and refunds 20 times, then the 21st attempt is 429
+`too_many_attempts` even though `total_generations` is still 0; and the counter
+resets the next Europe/London day.
+
+---
+
 ## Not in this spec (→ later.md)
 
 - Tutor plan
