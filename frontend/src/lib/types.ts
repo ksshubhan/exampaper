@@ -146,3 +146,13 @@ export interface Worksheet {
   notes?: string[]
   seed?: number
 }
+
+/** `GET /api/me` — who is signed in, and what they are allowed. */
+export interface Me {
+  email: string
+  plan: 'free' | 'monthly'
+  total_generations: number
+  day_generations: number
+  free_limit: number
+  daily_limit: number
+}

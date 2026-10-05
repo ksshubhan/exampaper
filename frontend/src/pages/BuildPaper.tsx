@@ -1,4 +1,5 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
+import { useAuth, useClerk } from '@clerk/clerk-react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { Navigate, useParams } from 'react-router-dom'
 import {
@@ -63,6 +64,13 @@ export default function BuildPaper() {
   const [targetMarks, setTargetMarks] = useState(80)
   const [includeAnswers, setIncludeAnswers] = useState(true)
 
+  // Generation needs an account. Pressing Generate while signed out opens
+  // Clerk's modal and remembers the intent, so the paper is built the moment
+  // sign-in completes rather than making the user press the button twice.
+  const { isSignedIn } = useAuth()
+  const { openSignIn } = useClerk()
+  const pendingGenerate = useRef(false)
+
   const [paper, setPaper] = useState<Paper | null>(null)
   const [loading, setLoading] = useState(false)
   const [downloading, setDownloading] = useState(false)
@@ -89,6 +97,48 @@ export default function BuildPaper() {
       }))
       .filter((g) => g.topics.length > 0)
   }, [groups, calculator, tier])
+
+  function requestGenerate() {
+    if (!isSignedIn) {
+      pendingGenerate.current = true
+      openSignIn()
+      return
+    }
+    void handleGenerate()
+  }
+
+  async function handleGenerate() {
+    setLoading(true)
+    setError(null)
+    try {
+      const result = await generatePaper({
+        // format is omitted: the backend already defaults it to the only
+        // value the frontend ever sent.
+        qualification: qual!.slug,
+        board: examBoard!.slug,
+        subject: subj!.slug,
+        calculator,
+        tier,
+        topics: [...selected],
+        target_marks: targetMarks,
+        include_answers: includeAnswers,
+      })
+      setPaper(result)
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Something went wrong.')
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  // Sign-in finished while a generation was queued — run it now.
+  useEffect(() => {
+    if (!isSignedIn || !pendingGenerate.current) return
+    pendingGenerate.current = false
+    void handleGenerate()
+    // handleGenerate is rebuilt every render; depending on it would loop.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isSignedIn])
 
   // Any unknown / mismatched / not-yet-shipped slug -> the practice index.
   if (
@@ -169,30 +219,6 @@ export default function BuildPaper() {
   const selectedTopics = groups
     .flatMap((g) => g.topics)
     .filter((t) => selected.has(t.slug))
-
-  async function handleGenerate() {
-    setLoading(true)
-    setError(null)
-    try {
-      const result = await generatePaper({
-        // format is omitted: the backend already defaults it to the only
-        // value the frontend ever sent.
-        qualification: qual!.slug,
-        board: examBoard!.slug,
-        subject: subj!.slug,
-        calculator,
-        tier,
-        topics: [...selected],
-        target_marks: targetMarks,
-        include_answers: includeAnswers,
-      })
-      setPaper(result)
-    } catch (e) {
-      setError(e instanceof Error ? e.message : 'Something went wrong.')
-    } finally {
-      setLoading(false)
-    }
-  }
 
   async function handleDownload() {
     if (!paper) return
@@ -311,7 +337,7 @@ export default function BuildPaper() {
           loading={loading}
           hasPaper={paper !== null}
           onClear={clearSelection}
-          onGenerate={handleGenerate}
+          onGenerate={requestGenerate}
         />
 
         {error && <p className="mt-3 text-sm text-red-500">{error}</p>}

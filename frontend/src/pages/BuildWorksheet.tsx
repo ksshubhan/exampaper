@@ -1,4 +1,5 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
+import { useAuth, useClerk } from '@clerk/clerk-react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { Navigate, useParams } from 'react-router-dom'
 import {
@@ -62,6 +63,13 @@ export default function BuildWorksheet() {
   const [perTopic, setPerTopic] = useState(DEFAULT_PER_TOPIC)
   const [includeAnswers, setIncludeAnswers] = useState(true)
 
+  // Generation needs an account. Pressing Generate while signed out opens
+  // Clerk's modal and remembers the intent, so the paper is built the moment
+  // sign-in completes rather than making the user press the button twice.
+  const { isSignedIn } = useAuth()
+  const { openSignIn } = useClerk()
+  const pendingGenerate = useRef(false)
+
   const [worksheet, setWorksheet] = useState<Worksheet | null>(null)
   const [loading, setLoading] = useState(false)
   const [downloading, setDownloading] = useState(false)
@@ -87,6 +95,46 @@ export default function BuildWorksheet() {
       }))
       .filter((g) => g.topics.length > 0)
   }, [groups, calculator, tier])
+
+  function requestGenerate() {
+    if (!isSignedIn) {
+      pendingGenerate.current = true
+      openSignIn()
+      return
+    }
+    void handleGenerate()
+  }
+
+  async function handleGenerate() {
+    setLoading(true)
+    setError(null)
+    try {
+      const result = await generateWorksheet({
+        qualification: qual!.slug,
+        board: examBoard!.slug,
+        subject: subj!.slug,
+        calculator,
+        tier,
+        topics: [...selected],
+        per_topic: perTopic,
+        include_answers: includeAnswers,
+      })
+      setWorksheet(result)
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Something went wrong.')
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  // Sign-in finished while a generation was queued — run it now.
+  useEffect(() => {
+    if (!isSignedIn || !pendingGenerate.current) return
+    pendingGenerate.current = false
+    void handleGenerate()
+    // handleGenerate is rebuilt every render; depending on it would loop.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isSignedIn])
 
   // Any unknown / mismatched / not-yet-shipped slug -> the practice index.
   if (
@@ -165,28 +213,6 @@ export default function BuildWorksheet() {
       for (const slug of unavailable) kept.delete(slug)
       return kept
     })
-  }
-
-  async function handleGenerate() {
-    setLoading(true)
-    setError(null)
-    try {
-      const result = await generateWorksheet({
-        qualification: qual!.slug,
-        board: examBoard!.slug,
-        subject: subj!.slug,
-        calculator,
-        tier,
-        topics: [...selected],
-        per_topic: perTopic,
-        include_answers: includeAnswers,
-      })
-      setWorksheet(result)
-    } catch (e) {
-      setError(e instanceof Error ? e.message : 'Something went wrong.')
-    } finally {
-      setLoading(false)
-    }
   }
 
   async function handleDownload() {
@@ -327,7 +353,7 @@ export default function BuildWorksheet() {
               )}
               <button
                 type="button"
-                onClick={handleGenerate}
+                onClick={requestGenerate}
                 disabled={count === 0 || overCap || loading}
                 className="min-h-11 rounded-xl bg-[var(--accent)] px-5 text-sm font-semibold text-[var(--accent-text)] transition active:scale-[0.99] disabled:cursor-not-allowed disabled:bg-[var(--border)] disabled:text-[var(--muted)] disabled:active:scale-100"
               >

@@ -1,7 +1,9 @@
 import type { ComponentType, SVGProps } from 'react'
 import { Link, useLocation } from 'react-router-dom'
+import { SignInButton, SignedIn, SignedOut, UserButton } from '@clerk/clerk-react'
 import { PRACTICE_PATH } from '../data/catalog'
 import { useTheme } from '../hooks/useTheme'
+import PlanPill from './PlanPill'
 import {
   AboutIcon,
   BracketsIcon,
@@ -86,14 +88,24 @@ export default function Header() {
           })}
         </nav>
 
-        {/* CTA */}
-        <button
-          type="button"
-          className="ml-1 hidden items-center gap-2 whitespace-nowrap rounded-full border border-[var(--border)] px-4 py-2 text-sm font-medium text-[var(--text)] transition hover:bg-[var(--hover)] active:scale-95 sm:flex"
-        >
-          <SparkleIcon className="h-4 w-4" />
-          Sign up
-        </button>
+        {/* Account: sign up when signed out, plan badge + avatar when in. */}
+        <SignedOut>
+          <SignInButton mode="modal">
+            <button
+              type="button"
+              className="ml-1 hidden items-center gap-2 whitespace-nowrap rounded-full border border-[var(--border)] px-4 py-2 text-sm font-medium text-[var(--text)] transition hover:bg-[var(--hover)] active:scale-95 sm:flex"
+            >
+              <SparkleIcon className="h-4 w-4" />
+              Sign up
+            </button>
+          </SignInButton>
+        </SignedOut>
+        <SignedIn>
+          <div className="ml-1 flex items-center gap-2">
+            <PlanPill />
+            <UserButton />
+          </div>
+        </SignedIn>
       </div>
     </header>
   )

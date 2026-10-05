@@ -1,8 +1,10 @@
 import { StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'
+import { ClerkProvider } from '@clerk/clerk-react'
 import { createBrowserRouter, RouterProvider } from 'react-router-dom'
 import './index.css'
 import App from './App.tsx'
+import ClerkTokenBridge from './components/ClerkTokenBridge.tsx'
 import Home from './pages/Home.tsx'
 import About from './pages/About.tsx'
 import Pricing from './pages/Pricing.tsx'
@@ -54,8 +56,22 @@ const router = createBrowserRouter([
   },
 ])
 
+const publishableKey = import.meta.env.VITE_CLERK_PUBLISHABLE_KEY
+
+if (!publishableKey) {
+  // Fail loudly and early: without Clerk nobody can generate anything.
+  throw new Error(
+    'VITE_CLERK_PUBLISHABLE_KEY is not set — copy frontend/.env.example to ' +
+      'frontend/.env and fill it in.',
+  )
+}
+
 createRoot(document.getElementById('root')!).render(
   <StrictMode>
-    <RouterProvider router={router} />
+    <ClerkProvider publishableKey={publishableKey} afterSignOutUrl="/">
+      {/* Gives api.ts access to the session token. Renders nothing. */}
+      <ClerkTokenBridge />
+      <RouterProvider router={router} />
+    </ClerkProvider>
   </StrictMode>,
 )
