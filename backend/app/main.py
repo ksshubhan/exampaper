@@ -17,6 +17,7 @@ from pydantic import BaseModel
 
 from .assembler import build_paper
 from .auth import get_current_user
+from .billing import router as billing_router
 from .config import get_settings
 from .generators.registry import topics_catalog
 from .limits import Reservation, pending_reservation, reserve_generation
@@ -143,5 +144,10 @@ async def render_pdf_endpoint(
         headers={"Content-Disposition": f'attachment; filename="{req.filename}"'},
     )
 
+
+# Checkout, the Customer Portal and the Stripe webhook, mounted on the same
+# `/api` prefix: `/api/billing/checkout`, `/api/billing/portal`,
+# `/api/stripe/webhook`.
+api.include_router(billing_router)
 
 app.include_router(api)

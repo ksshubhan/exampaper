@@ -55,6 +55,11 @@ class Settings:
     #: Origins allowed in a session token's `azp` claim. Defaults to the one
     #: frontend we serve, so a token minted for somewhere else is rejected.
     authorized_parties: tuple[str, ...]
+    # Stripe, test mode for now. Like the Clerk keys, a missing value is
+    # reported when a request needs it rather than at import.
+    stripe_secret_key: str | None
+    stripe_webhook_secret: str | None
+    stripe_price_monthly: str | None
     free_generation_limit: int
     daily_generation_limit: int
 
@@ -69,6 +74,9 @@ def get_settings() -> Settings:
         clerk_jwks_url=os.getenv("CLERK_JWKS_URL") or None,
         authorized_parties=_csv_env("AUTHORIZED_PARTIES")
         or (os.getenv("FRONTEND_URL", DEFAULT_FRONTEND_URL),),
+        stripe_secret_key=os.getenv("STRIPE_SECRET_KEY") or None,
+        stripe_webhook_secret=os.getenv("STRIPE_WEBHOOK_SECRET") or None,
+        stripe_price_monthly=os.getenv("STRIPE_PRICE_MONTHLY") or None,
         free_generation_limit=_int_env(
             "FREE_GENERATION_LIMIT", DEFAULT_FREE_GENERATION_LIMIT
         ),

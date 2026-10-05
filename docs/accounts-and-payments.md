@@ -217,10 +217,24 @@ Goal: checkout, portal, and webhook. Three endpoints.
   - returns `{"url": session.url}`
   - if the user is already `monthly`, return 409 `{"detail": {"code": "already_subscribed"}}`
 - `POST /api/billing/portal` (auth required) → Customer Portal session with `return_url=f"{FRONTEND_URL}/account"`, returns `{"url": ...}`. 400 `{"detail": {"code": "no_customer"}}` if no `stripe_customer_id`.
+- Both billing endpoints: if Stripe cannot be reached or is misconfigured —
+  `STRIPE_SECRET_KEY` or `STRIPE_PRICE_MONTHLY` unset, or the Stripe API itself
+  erroring — return **HTTP 503** `{"detail": {"code": "billing_unavailable"}}`
+  and log which it was. One code for both, because the user can only ever do the
+  same thing about it (wait and retry); the operator reads the log. Never a 500:
+  a missing env var is not a crash.
 - `POST /api/stripe/webhook` (no auth):
   - verify the signature with `STRIPE_WEBHOOK_SECRET` using the **raw request body**; bad signature → 400.
   - skip if `event.id` already in `stripe_events`; otherwise insert it.
-  - `checkout.session.completed` → look up user by `client_reference_id`; set `stripe_customer_id`, `stripe_subscription_id`, `plan='monthly'`, `subscription_status='active'`.
+  - `checkout.session.completed` → look up user by `client_reference_id`; set
+    `stripe_customer_id` and `stripe_subscription_id` always. Set
+    `plan='monthly'`, `subscription_status='active'` **only if
+    `payment_status` is `paid` or `no_payment_required`** — a session can
+    complete `unpaid` (asynchronous payment methods settle minutes later), and
+    completing is not paying. Anything else, including a missing
+    `payment_status`: keep the ids, leave the plan alone, and let
+    `customer.subscription.updated` grant access when the status turns `active`.
+    The ids stored here are what makes that later event findable.
   - `customer.subscription.updated` → find by `stripe_subscription_id`; set `subscription_status`; `plan='monthly'` if status is `active` or `trialing`, else `'free'`.
   - `customer.subscription.deleted` → `plan='free'`, `subscription_status='canceled'`.
   - always return 200 for handled or ignored event types.
@@ -246,6 +260,12 @@ Goal: match the agreed mockup.
   - small text `Secure payment by Stripe`
   - close button with `aria-label="Close"`; Escape closes; focus trapped while open.
 - On 429 `daily_limit_reached`: a plain inline message, exact text `You've reached today's limit. It resets at midnight.` No popup.
+- On 503 `billing_unavailable` from either billing endpoint (so: the
+  `Continue to payment` button, `Subscribe` on `/pricing`, and
+  `Manage subscription` on `/account`): a plain inline message next to the
+  button that was pressed, exact text `Payment isn't available right now. Please try again shortly.`
+  Leave the button enabled so it can be retried. No popup, and do not send the
+  user to Stripe.
 - After the free paper is generated: an inline note under the download buttons, exact text `That was your free paper.` followed by a link `See plans` → `/pricing`.
 - **`/pricing`** (public): two plan cards, Free and Unlimited. Free → `Get your free paper` (links to generate). Unlimited → `Subscribe` (same checkout call; if signed out, sign in first). FAQ: what counts as one paper, cancelling, which exams, who should make the account (a parent or guardian). Prices come from one constant `PRICE_MONTHLY_DISPLAY` so I can change it in one place.
 - **`/account`** (signed in only): plan name, status badge, usage line (`Papers today: X of 10` for monthly, `Free papers: X of 1` for free), `Manage subscription` button (portal) for monthly, `Upgrade` link for free, email, Sign out. If URL has `?upgraded=1`, poll `GET /api/me` every 2s for up to 20s until `plan === 'monthly'`, showing `Confirming your payment…` meanwhile.
