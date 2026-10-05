@@ -1,9 +1,8 @@
 """Clerk authentication, against a mocked JWKS.
 
-An RSA keypair is generated in-process; tokens are signed with the private half
-and `app.auth.signing_key` is patched to hand back the public half. That
-exercises the real `jwt.decode` path — signature, `exp`, `nbf`, required claims
-— without reaching Clerk.
+Tokens come from `tests.fake_clerk`, which signs them with an in-process RSA key
+and lets us patch `app.auth.signing_key` to the matching public half. The real
+`jwt.decode` path still runs; only the key lookup is faked.
 
 Needs `TEST_DATABASE_URL`: these tests create and drop tables, so they refuse
 to touch `DATABASE_URL`.
@@ -13,11 +12,9 @@ from __future__ import annotations
 
 import os
 import unittest
-from datetime import datetime, timedelta, timezone
+from datetime import timedelta
 
-import jwt
 import sqlalchemy as sa
-from cryptography.hazmat.primitives.asymmetric import rsa
 from fastapi.testclient import TestClient
 from sqlalchemy.orm import sessionmaker
 
@@ -26,39 +23,9 @@ from app.config import get_settings
 from app.db import Base, get_db
 from app.main import app
 from app.models import User
+from tests.fake_clerk import OTHER_PRIVATE_KEY, PUBLIC_KEY, make_token
 
 TEST_DATABASE_URL = os.getenv("TEST_DATABASE_URL")
-
-_PRIVATE_KEY = rsa.generate_private_key(public_exponent=65537, key_size=2048)
-_PUBLIC_KEY = _PRIVATE_KEY.public_key()
-OTHER_PRIVATE_KEY = rsa.generate_private_key(public_exponent=65537, key_size=2048)
-
-
-def make_token(
-    *,
-    sub: str = "user_test123",
-    email: str | None = "test@example.com",
-    expires_in: timedelta = timedelta(minutes=30),
-    not_before: timedelta | None = None,
-    key: rsa.RSAPrivateKey | None = None,
-    omit: tuple[str, ...] = (),
-    azp: str | None = None,
-) -> str:
-    now = datetime.now(tz=timezone.utc)
-    claims: dict = {
-        "sub": sub,
-        "iat": int(now.timestamp()),
-        "exp": int((now + expires_in).timestamp()),
-    }
-    if email is not None:
-        claims["email"] = email
-    if not_before is not None:
-        claims["nbf"] = int((now + not_before).timestamp())
-    if azp is not None:
-        claims["azp"] = azp
-    for name in omit:
-        claims.pop(name, None)
-    return jwt.encode(claims, key or _PRIVATE_KEY, algorithm="RS256")
 
 
 @unittest.skipUnless(
@@ -95,7 +62,7 @@ class AuthTestCase(unittest.TestCase):
             s.commit()
         # Stand in for Clerk's JWKS endpoint.
         self._real_signing_key = auth.signing_key
-        auth.signing_key = lambda token: _PUBLIC_KEY
+        auth.signing_key = lambda token: PUBLIC_KEY
         # Known limits, independent of whatever backend/.env says.
         os.environ["FREE_GENERATION_LIMIT"] = "1"
         os.environ["DAILY_GENERATION_LIMIT"] = "10"
