@@ -12,6 +12,7 @@ of its token we disliked.
 
 from __future__ import annotations
 
+import logging
 from functools import lru_cache
 from typing import Any
 
@@ -32,6 +33,8 @@ CLERK_API_BASE = "https://api.clerk.com/v1"
 _CLERK_TIMEOUT = httpx.Timeout(10.0)
 
 AUTH_REQUIRED_DETAIL = {"code": "auth_required"}
+
+logger = logging.getLogger(__name__)
 
 
 def auth_required() -> HTTPException:
@@ -58,6 +61,13 @@ def _jwk_client() -> PyJWKClient:
     """Cached JWKS client. Refetches when it meets an unknown key id."""
     url = get_settings().clerk_jwks_url
     if not url:
+        # A deployment mistake, not a caller mistake: the request still gets a
+        # plain 401, but an operator needs to see which variable is missing.
+        # lru_cache does not cache exceptions, so this logs on every attempt.
+        logger.error(
+            "CLERK_JWKS_URL is not set — rejecting every authenticated request. "
+            "Set it in backend/.env (see backend/.env.example)."
+        )
         raise auth_required()
     return PyJWKClient(url, cache_keys=True)
 
@@ -67,14 +77,28 @@ def signing_key(token: str) -> Any:
     return _jwk_client().get_signing_key_from_jwt(token).key
 
 
+def authorized_party_allowed(claims: dict[str, Any]) -> bool:
+    """Whether the token's `azp` is one of ours.
+
+    Clerk sets `azp` to the origin the token was minted for. A token issued to
+    another site must not work here. Tokens with no `azp` are accepted: Clerk
+    omits it for some token types, and absence is not evidence of misuse.
+    """
+    azp = claims.get("azp")
+    if not azp:
+        return True
+    return azp in get_settings().authorized_parties
+
+
 def verify_session_token(token: str) -> dict[str, Any]:
     """Decode and verify a Clerk session token, or raise 401.
 
-    Audience is not checked: a Clerk session token's `aud` is not a value we
-    issue, and the spec asks for signature, `exp` and `nbf` only.
+    Checks the signature, `exp`, `nbf`, and that `azp` — when the token carries
+    one — names an origin we serve. `aud` is not checked: a Clerk session
+    token's audience is not a value we issue.
     """
     try:
-        return jwt.decode(
+        claims = jwt.decode(
             token,
             signing_key(token),
             algorithms=["RS256"],
@@ -91,6 +115,14 @@ def verify_session_token(token: str) -> dict[str, Any]:
     except Exception as exc:  # invalid signature, expired, malformed, unknown kid
         raise auth_required() from exc
 
+    if not authorized_party_allowed(claims):
+        logger.warning(
+            "Rejected a token whose azp (%r) is not an authorized party.",
+            claims.get("azp"),
+        )
+        raise auth_required()
+    return claims
+
 
 def email_from_claims(claims: dict[str, Any]) -> str | None:
     """An email address out of the token, if Clerk was configured to include one."""
@@ -105,6 +137,11 @@ def fetch_email_from_clerk(clerk_user_id: str) -> str:
     """Ask Clerk for a user's primary email. Used when the token omits it."""
     secret = get_settings().clerk_secret_key
     if not secret:
+        logger.error(
+            "CLERK_SECRET_KEY is not set — cannot look up the email address for "
+            "%s, so the request is rejected. Set it in backend/.env.",
+            clerk_user_id,
+        )
         raise auth_required()
     try:
         response = httpx.get(

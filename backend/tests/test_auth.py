@@ -42,6 +42,7 @@ def make_token(
     not_before: timedelta | None = None,
     key: rsa.RSAPrivateKey | None = None,
     omit: tuple[str, ...] = (),
+    azp: str | None = None,
 ) -> str:
     now = datetime.now(tz=timezone.utc)
     claims: dict = {
@@ -53,6 +54,8 @@ def make_token(
         claims["email"] = email
     if not_before is not None:
         claims["nbf"] = int((now + not_before).timestamp())
+    if azp is not None:
+        claims["azp"] = azp
     for name in omit:
         claims.pop(name, None)
     return jwt.encode(claims, key or _PRIVATE_KEY, algorithm="RS256")
@@ -96,6 +99,7 @@ class AuthTestCase(unittest.TestCase):
         # Known limits, independent of whatever backend/.env says.
         os.environ["FREE_GENERATION_LIMIT"] = "1"
         os.environ["DAILY_GENERATION_LIMIT"] = "10"
+        os.environ["AUTHORIZED_PARTIES"] = "http://localhost:5173,https://exampaper.test"
         get_settings.cache_clear()
 
     def tearDown(self) -> None:
@@ -242,6 +246,76 @@ class TestValidToken(AuthTestCase):
         self.assertEqual((body["free_limit"], body["daily_limit"]), (3, 25))
 
 
+class TestAuthorizedParty(AuthTestCase):
+    """`azp` must name an origin we serve, when the token carries one."""
+
+    def test_token_with_no_azp_is_accepted(self) -> None:
+        token = make_token(sub="user_noazp", email="noazp@example.com")
+        response = self.client.get("/api/me", headers=self.auth_header(token))
+        self.assertEqual(response.status_code, 200)
+
+    def test_matching_azp_is_accepted(self) -> None:
+        token = make_token(
+            sub="user_goodazp", email="good@example.com", azp="http://localhost:5173"
+        )
+        response = self.client.get("/api/me", headers=self.auth_header(token))
+        self.assertEqual(response.status_code, 200)
+
+    def test_second_authorized_party_is_accepted(self) -> None:
+        token = make_token(
+            sub="user_azp2", email="azp2@example.com", azp="https://exampaper.test"
+        )
+        self.assertEqual(
+            self.client.get("/api/me", headers=self.auth_header(token)).status_code, 200
+        )
+
+    def test_foreign_azp_is_rejected(self) -> None:
+        token = make_token(
+            sub="user_badazp", email="bad@example.com", azp="https://evil.example"
+        )
+        response = self.client.get("/api/me", headers=self.auth_header(token))
+        self.assertEqual(response.status_code, 401)
+        self.assertEqual(response.json()["detail"]["code"], "auth_required")
+        self.assertEqual(self.users(), [], "a rejected token must create no row")
+
+    def test_authorized_parties_defaults_to_frontend_url(self) -> None:
+        del os.environ["AUTHORIZED_PARTIES"]
+        os.environ["FRONTEND_URL"] = "https://only-this.example"
+        get_settings.cache_clear()
+        try:
+            good = make_token(
+                sub="user_dflt_ok", email="a@example.com", azp="https://only-this.example"
+            )
+            bad = make_token(
+                sub="user_dflt_no", email="b@example.com", azp="http://localhost:5173"
+            )
+            self.assertEqual(
+                self.client.get("/api/me", headers=self.auth_header(good)).status_code,
+                200,
+            )
+            self.assertEqual(
+                self.client.get("/api/me", headers=self.auth_header(bad)).status_code,
+                401,
+            )
+        finally:
+            os.environ.pop("FRONTEND_URL", None)
+            get_settings.cache_clear()
+
+
+class TestRemovedEndpoint(AuthTestCase):
+    def test_single_question_endpoint_is_gone(self) -> None:
+        response = self.client.post(
+            "/api/generate",
+            json={
+                "format": "past-papers",
+                "qualification": "gcse",
+                "board": "edexcel",
+                "subject": "maths",
+            },
+        )
+        self.assertEqual(response.status_code, 404)
+
+
 class TestMisconfiguration(AuthTestCase):
     """A missing Clerk setting is a 401, never a 500."""
 
@@ -260,6 +334,44 @@ class TestMisconfiguration(AuthTestCase):
             get_settings.cache_clear()
         self.assertEqual(response.status_code, 401)
         self.assertEqual(response.json()["detail"]["code"], "auth_required")
+        self.assertEqual(self.users(), [])
+
+    def test_unset_jwks_url_logs_an_error_naming_the_variable(self) -> None:
+        auth.signing_key = self._real_signing_key
+        auth._jwk_client.cache_clear()
+        previous = os.environ.pop("CLERK_JWKS_URL", None)
+        get_settings.cache_clear()
+        try:
+            token = make_token(sub="user_logjwks", email="l@example.com")
+            with self.assertLogs("app.auth", level="ERROR") as captured:
+                self.client.get("/api/me", headers=self.auth_header(token))
+        finally:
+            if previous is not None:
+                os.environ["CLERK_JWKS_URL"] = previous
+            auth._jwk_client.cache_clear()
+            get_settings.cache_clear()
+        self.assertTrue(
+            any("CLERK_JWKS_URL" in line for line in captured.output),
+            f"expected CLERK_JWKS_URL in the log, got {captured.output}",
+        )
+
+    def test_unset_secret_key_logs_an_error_naming_the_variable(self) -> None:
+        """Reached only when the token has no email, so Clerk must be consulted."""
+        previous = os.environ.pop("CLERK_SECRET_KEY", None)
+        get_settings.cache_clear()
+        try:
+            token = make_token(sub="user_logsecret", email=None)
+            with self.assertLogs("app.auth", level="ERROR") as captured:
+                response = self.client.get("/api/me", headers=self.auth_header(token))
+        finally:
+            if previous is not None:
+                os.environ["CLERK_SECRET_KEY"] = previous
+            get_settings.cache_clear()
+        self.assertEqual(response.status_code, 401)
+        self.assertTrue(
+            any("CLERK_SECRET_KEY" in line for line in captured.output),
+            f"expected CLERK_SECRET_KEY in the log, got {captured.output}",
+        )
         self.assertEqual(self.users(), [])
 
 

@@ -23,6 +23,12 @@ DEFAULT_FREE_GENERATION_LIMIT = 1
 DEFAULT_DAILY_GENERATION_LIMIT = 10
 
 
+def _csv_env(name: str) -> tuple[str, ...]:
+    """A comma-separated env var as a tuple, blanks dropped."""
+    raw = os.getenv(name) or ""
+    return tuple(part.strip() for part in raw.split(",") if part.strip())
+
+
 def _int_env(name: str, default: int) -> int:
     """An int from the environment, falling back if unset or not a number."""
     raw = os.getenv(name)
@@ -46,6 +52,9 @@ class Settings:
     # reported when a request arrives, not at import, so the app still boots.
     clerk_secret_key: str | None
     clerk_jwks_url: str | None
+    #: Origins allowed in a session token's `azp` claim. Defaults to the one
+    #: frontend we serve, so a token minted for somewhere else is rejected.
+    authorized_parties: tuple[str, ...]
     free_generation_limit: int
     daily_generation_limit: int
 
@@ -58,6 +67,8 @@ def get_settings() -> Settings:
         database_url=os.getenv("DATABASE_URL") or None,
         clerk_secret_key=os.getenv("CLERK_SECRET_KEY") or None,
         clerk_jwks_url=os.getenv("CLERK_JWKS_URL") or None,
+        authorized_parties=_csv_env("AUTHORIZED_PARTIES")
+        or (os.getenv("FRONTEND_URL", DEFAULT_FRONTEND_URL),),
         free_generation_limit=_int_env(
             "FREE_GENERATION_LIMIT", DEFAULT_FREE_GENERATION_LIMIT
         ),

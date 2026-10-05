@@ -16,10 +16,10 @@ from pydantic import BaseModel
 from .assembler import build_paper
 from .auth import get_current_user
 from .config import get_settings
-from .generators.registry import get_generator, topics_catalog
+from .generators.registry import topics_catalog
 from .models import User
 from .pdf import render_pdf
-from .schema import GeneratePaperRequest, GenerateRequest, Item, Paper
+from .schema import GeneratePaperRequest, Paper
 
 app = FastAPI(title="ExamPaper API", version="0.0.1")
 
@@ -38,13 +38,6 @@ api = APIRouter(prefix="/api")
 @api.get("/health")
 def health() -> dict[str, str]:
     return {"status": "ok"}
-
-
-@api.post("/generate", response_model=Item)
-def generate(req: GenerateRequest) -> Item:
-    """Generate one question for the given context."""
-    generator = get_generator(req.archetype)
-    return generator(req)
 
 
 @api.get("/me")
