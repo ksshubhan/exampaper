@@ -1,5 +1,7 @@
 # Python
 .venv/
+# Dev-only venv (see backend/requirements-dev.txt); venv self-ignores too.
+.venv-dev/
 __pycache__/
 *.pyc
 .env

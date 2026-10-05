@@ -8,3 +8,7 @@ sympy>=1.13
 playwright>=1.40
 pypdf>=4.0  # pad the paper to an even page count (printed double-sided)
 python-dotenv>=1.0  # load backend/.env; arrives via uvicorn[standard] too
+# Accounts and payments (docs/accounts-and-payments.md)
+sqlalchemy>=2.0
+alembic>=1.13
+psycopg[binary]>=3.1  # Postgres driver

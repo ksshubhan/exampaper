@@ -26,6 +26,9 @@ class Settings:
     """Settings read once at import. Extend as later sections add env vars."""
 
     frontend_url: str
+    # No default: there is no sane fallback for a database, and silently
+    # pointing at the wrong one is worse than failing loudly.
+    database_url: str | None
 
 
 @lru_cache
@@ -33,4 +36,5 @@ def get_settings() -> Settings:
     """Cached settings. Call `get_settings.cache_clear()` in tests that patch env."""
     return Settings(
         frontend_url=os.getenv("FRONTEND_URL", DEFAULT_FRONTEND_URL),
+        database_url=os.getenv("DATABASE_URL") or None,
     )
