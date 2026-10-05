@@ -15,7 +15,9 @@ import Breadcrumb from '../components/Breadcrumb'
 import TopicPicker from '../components/TopicPicker'
 import { PaperSheet } from '../components/PaperPreview'
 import WorksheetDocument from '../components/WorksheetDocument'
+import UpgradeModal from '../components/UpgradeModal'
 import { generateWorksheet, getTopics, renderPdf } from '../lib/api'
+import { generationErrorMessage, isUpgradeRequired } from '../lib/billing'
 import { PRESETS, isAvailable, type PresetId } from '../lib/topics'
 import type { TopicGroup, Worksheet } from '../lib/types'
 
@@ -74,6 +76,7 @@ export default function BuildWorksheet() {
   const [loading, setLoading] = useState(false)
   const [downloading, setDownloading] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [upgradeOpen, setUpgradeOpen] = useState(false)
 
   useEffect(() => {
     getTopics()
@@ -121,7 +124,10 @@ export default function BuildWorksheet() {
       })
       setWorksheet(result)
     } catch (e) {
-      setError(e instanceof Error ? e.message : 'Something went wrong.')
+      // Same limits, same answers as a paper: the popup on a 402, the plain
+      // sentence on a 429.
+      if (isUpgradeRequired(e)) setUpgradeOpen(true)
+      else setError(generationErrorMessage(e))
     } finally {
       setLoading(false)
     }
@@ -402,6 +408,8 @@ export default function BuildWorksheet() {
           </PaperSheet>
         </div>
       )}
+
+      {upgradeOpen && <UpgradeModal onClose={() => setUpgradeOpen(false)} />}
     </div>
   )
 }

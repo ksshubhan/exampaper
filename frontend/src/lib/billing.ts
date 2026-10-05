@@ -1,0 +1,69 @@
+/**
+ * Plans, the price shown on screen, and what each backend error code says.
+ *
+ * The limits live on the backend; this module only decides the wording. Three
+ * of these strings are fixed by `docs/accounts-and-payments.md` and are asserted
+ * on by eye during the manual test — change them there first.
+ */
+
+import { ApiError } from './api'
+
+/**
+ * The monthly plan's price, as displayed. The one place to change it.
+ *
+ * It must match the Stripe price behind `STRIPE_PRICE_MONTHLY`: Checkout
+ * charges whatever Stripe says, and nothing here can see that number, so a
+ * price change in the dashboard means a change on this line too.
+ */
+export const PRICE_MONTHLY_DISPLAY = '£5'
+
+/** What that price buys, in billing-period words. */
+export const PRICE_MONTHLY_PERIOD = 'per month'
+
+/** 429 `daily_limit_reached` — a monthly subscriber past the fair-use cap. */
+export const DAILY_LIMIT_MESSAGE =
+  "You've reached today's limit. It resets at midnight."
+
+/** 503 `billing_unavailable` — Stripe is unreachable or misconfigured. */
+export const BILLING_UNAVAILABLE_MESSAGE =
+  "Payment isn't available right now. Please try again shortly."
+
+/** True for the 402 that means "this account has used its free paper". */
+export function isUpgradeRequired(error: unknown): boolean {
+  return error instanceof ApiError && error.code === 'upgrade_required'
+}
+
+/**
+ * The inline message for a failed generation.
+ *
+ * `upgrade_required` never reaches here — it opens the popup instead, so a
+ * caller checks `isUpgradeRequired` first.
+ */
+export function generationErrorMessage(
+  error: unknown,
+  fallback = 'Something went wrong.',
+): string {
+  if (error instanceof ApiError && error.code === 'daily_limit_reached') {
+    return DAILY_LIMIT_MESSAGE
+  }
+  return error instanceof Error ? error.message : fallback
+}
+
+/** The inline message for a failed Checkout or Customer Portal call. */
+export function billingErrorMessage(error: unknown): string {
+  if (error instanceof ApiError) {
+    switch (error.code) {
+      case 'billing_unavailable':
+        return BILLING_UNAVAILABLE_MESSAGE
+      case 'already_subscribed':
+        return "You're already subscribed."
+      case 'no_customer':
+        return 'There is no subscription to manage yet.'
+      case 'auth_required':
+        return 'Please sign in again.'
+    }
+  }
+  return error instanceof Error
+    ? error.message
+    : 'Something went wrong. Please try again shortly.'
+}

@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import { Link } from 'react-router-dom'
 import { useAuth } from '@clerk/clerk-react'
 import { getMe } from '../lib/api'
 import { planLabel } from '../lib/plan'
@@ -31,12 +32,15 @@ export default function PlanPill() {
   // sign-out — that avoids clearing state from inside the effect.
   if (!isSignedIn || !me) return null
 
+  // The badge is also the way to the account page — plan, usage and billing
+  // all live behind it.
   return (
-    <span
+    <Link
+      to="/account"
       title={me.email}
-      className="hidden whitespace-nowrap rounded-full border border-[var(--border)] px-3 py-1.5 text-sm font-medium text-[var(--muted)] sm:inline-block"
+      className="hidden whitespace-nowrap rounded-full border border-[var(--border)] px-3 py-1.5 text-sm font-medium text-[var(--muted)] transition hover:bg-[var(--hover)] hover:text-[var(--text)] sm:inline-block"
     >
       {planLabel(me)}
-    </span>
+    </Link>
   )
 }

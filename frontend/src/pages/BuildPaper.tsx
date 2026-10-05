@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useAuth, useClerk } from '@clerk/clerk-react'
 import { renderToStaticMarkup } from 'react-dom/server'
-import { Navigate, useParams } from 'react-router-dom'
+import { Link, Navigate, useParams } from 'react-router-dom'
 import {
   PRACTICE_PATH,
   getBoard,
@@ -19,7 +19,9 @@ import PaperPreview, {
   PaperDocument,
   PaperSheet,
 } from '../components/PaperPreview'
-import { generatePaper, getTopics, renderPdf } from '../lib/api'
+import UpgradeModal from '../components/UpgradeModal'
+import { generatePaper, getMe, getTopics, renderPdf } from '../lib/api'
+import { generationErrorMessage, isUpgradeRequired } from '../lib/billing'
 import { PRESETS, isAvailable, type PresetId } from '../lib/topics'
 import type { Paper, TopicGroup } from '../lib/types'
 
@@ -75,6 +77,10 @@ export default function BuildPaper() {
   const [loading, setLoading] = useState(false)
   const [downloading, setDownloading] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  // The 402 opens the popup; the free-paper note is whatever /api/me says
+  // about the allowance once the paper is in hand.
+  const [upgradeOpen, setUpgradeOpen] = useState(false)
+  const [freePaperUsed, setFreePaperUsed] = useState(false)
 
   useEffect(() => {
     getTopics()
@@ -124,10 +130,24 @@ export default function BuildPaper() {
         include_answers: includeAnswers,
       })
       setPaper(result)
+      void checkAllowance()
     } catch (e) {
-      setError(e instanceof Error ? e.message : 'Something went wrong.')
+      // 402 is not an error to read, it is an offer: the popup, not red text.
+      if (isUpgradeRequired(e)) setUpgradeOpen(true)
+      else setError(generationErrorMessage(e))
     } finally {
       setLoading(false)
+    }
+  }
+
+  /** Was that the free paper? The backend owns the count, so ask it. */
+  async function checkAllowance() {
+    try {
+      const me = await getMe()
+      setFreePaperUsed(me.plan === 'free' && me.total_generations >= me.free_limit)
+    } catch {
+      // The note is a courtesy; a failed /api/me must not look like a failed
+      // paper, which is sitting right there on the page.
     }
   }
 
@@ -370,7 +390,21 @@ export default function BuildPaper() {
             </button>
           </div>
         )}
+
+        {paper && paper.questions.length > 0 && freePaperUsed && (
+          <p className="mt-3 text-sm text-[var(--muted)]">
+            That was your free paper.{' '}
+            <Link
+              to="/pricing"
+              className="font-medium text-[var(--text)] underline decoration-[var(--border)] underline-offset-4 transition hover:decoration-[var(--text)]"
+            >
+              See plans
+            </Link>
+          </p>
+        )}
       </div>
+
+      {upgradeOpen && <UpgradeModal onClose={() => setUpgradeOpen(false)} />}
 
       {paper && paper.questions.length > 0 && (
         <div className="mt-6">
