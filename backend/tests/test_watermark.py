@@ -27,7 +27,7 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 
 import sqlalchemy as sa
 from fastapi.testclient import TestClient
-from pypdf import PdfReader
+from pypdf import PdfReader, PdfWriter
 from sqlalchemy.orm import sessionmaker
 
 from app import auth
@@ -35,7 +35,7 @@ from app.config import get_settings
 from app.db import Base, get_db
 from app.main import app
 from app.models import User
-from app.pdf import render_pdf
+from app.pdf import _pad_to_even, render_pdf
 from tests.fake_clerk import PUBLIC_KEY, make_token
 
 TEST_DATABASE_URL = os.getenv("TEST_DATABASE_URL")
@@ -105,6 +105,32 @@ class TestFooterText(unittest.TestCase):
             "<p>x</p>", "", email="<b>a@example.com</b>", on=dt.date(2026, 10, 5)
         )
         self.assertIn("Generated for <b>a@example.com</b>", page_texts(pdf)[0])
+
+
+def blank_pdf(pages: int) -> bytes:
+    """A minimal A4 PDF of `pages` blank pages."""
+    writer = PdfWriter()
+    for _ in range(pages):
+        writer.add_blank_page(width=595, height=842)
+    out = io.BytesIO()
+    writer.write(out)
+    return out.getvalue()
+
+
+class TestPadToEven(unittest.TestCase):
+    """The stitch-on-a-blank-page fallback, used when the in-document pad misses."""
+
+    def test_an_even_pdf_passes_through_unchanged(self) -> None:
+        """No page added, and the bytes are handed back untouched."""
+        original = blank_pdf(4)
+        result = _pad_to_even(original)
+        self.assertEqual(result, original, "an even PDF was rewritten")
+        self.assertEqual(len(PdfReader(io.BytesIO(result)).pages), 4)
+
+    def test_an_odd_pdf_gains_one_page(self) -> None:
+        """The companion case, so the guard cannot be inverted unnoticed."""
+        result = _pad_to_even(blank_pdf(3))
+        self.assertEqual(len(PdfReader(io.BytesIO(result)).pages), 4)
 
 
 class TestNoNetworkDuringRender(unittest.TestCase):

@@ -92,8 +92,15 @@ _PAD_PAGE = """() => {
 
 
 def _pad_to_even(pdf_bytes: bytes) -> bytes:
-    """Stitch on a blank page. The fallback if the in-document pad misses."""
+    """Stitch on a blank page. The fallback if the in-document pad misses.
+
+    A no-op on an already-even document: it hands the original bytes straight
+    back rather than rewriting them, so the name holds for any caller, not just
+    the odd-count path below.
+    """
     reader = PdfReader(io.BytesIO(pdf_bytes))
+    if len(reader.pages) % 2 == 0:
+        return pdf_bytes
     writer = PdfWriter()
     for page in reader.pages:
         writer.add_page(page)
