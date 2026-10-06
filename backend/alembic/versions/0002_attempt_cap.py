@@ -6,7 +6,8 @@ Create Date: 2026-10-06
 
 The attempt cap. `day_generations` counts papers delivered — it is refunded
 when a generation fails or its client disappears — so it cannot bound work
-done. These two columns count what was *asked for*, which is never given back.
+done. These two columns count generations *started*, one per reserved slot,
+which is never given back.
 
 Added as an ALTER rather than folded into 0001, because 0001 has already been
 applied to real databases.

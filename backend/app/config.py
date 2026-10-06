@@ -66,8 +66,9 @@ class Settings:
     free_generation_limit: int
     daily_generation_limit: int
     #: Generation *attempts* allowed per Europe/London day, on every plan.
-    #: Counted whether or not the attempt produced a paper, and never
-    #: refunded — otherwise a loop of generate-then-disconnect is free.
+    #: One per reserved slot, counted before any work starts and never
+    #: refunded — otherwise a loop of generate-then-disconnect is free. A
+    #: refused request reserves nothing, so it costs nothing.
     max_daily_attempts: int
 
 

@@ -17,11 +17,14 @@ Two counters, counting different things:
 
 * `day_generations` / `total_generations` — papers *delivered*. Refundable, so
   a parent who closes the tab keeps their free paper.
-* `day_attempts` — papers *asked for*, on every plan. Never refunded. Because
-  the refund gives the reserved slot straight back, a script could otherwise
-  loop generate → disconnect → generate for unbounded compute at no cost; the
-  attempt cap is what bounds that. It is an abuse ceiling, so it is checked
-  first and its refusal (`too_many_attempts`) outranks the plan's own.
+* `day_attempts` — generations *started*, on every plan. Spent when a slot is
+  reserved and never given back. Because the refund hands the reserved slot
+  straight back, a script could otherwise loop generate → disconnect →
+  generate for unbounded compute at no cost; the attempt cap is what bounds
+  that. It counts work, so only a request that reserved a slot — and therefore
+  went on to do work — spends one: a refusal (402, 429) starts no generation
+  and costs nothing, which also means a free user who has run out cannot be
+  locked out of the day they upgrade.
 """
 
 from __future__ import annotations
@@ -80,9 +83,10 @@ _SLOT_AVAILABLE = """
 # has already been incremented and `< :free_limit` would read false for the
 # very request that just succeeded.
 #
-# The attempt is recorded whether or not a slot was free, so a user looping
-# into 402s still walks into the cap. The only way not to spend an attempt is
-# to already be over the cap — which is the point.
+# Every counter here, attempts included, moves only when a slot is actually
+# reserved — so a refused request leaves the row exactly as it found it and the
+# caller rolls back. A reservation is what precedes real work, and real work is
+# what the cap is for.
 _RESERVE_SQL = text(
     f"""
     WITH before AS (
@@ -99,8 +103,14 @@ _RESERVE_SQL = text(
         FOR UPDATE
     )
     UPDATE users SET
-        day_attempts = before.attempt_count + 1,
-        attempt_date = :today,
+        day_attempts = CASE
+            WHEN {_SLOT_AVAILABLE} THEN before.attempt_count + 1
+            ELSE users.day_attempts
+        END,
+        attempt_date = CASE
+            WHEN {_SLOT_AVAILABLE} THEN :today
+            ELSE users.attempt_date
+        END,
         total_generations = users.total_generations
             + CASE WHEN {_SLOT_AVAILABLE} THEN 1 ELSE 0 END,
         day_generations = CASE
@@ -167,8 +177,8 @@ class Reservation:
     def refund(self) -> None:
         """Give the slot back. Safe to call more than once.
 
-        The *attempt* is not given back: the work was asked for, and that is
-        what the attempt cap counts.
+        The *attempt* is not given back: the work was started, and that is what
+        the attempt cap counts.
         """
         if self._refunded:
             return
@@ -238,17 +248,22 @@ def reserve_generation(
 
     if row is None:
         # The only `WHERE` the row can fail — `get_current_user` just loaded
-        # it, so it exists. Nothing was written: the attempt cap is the one
-        # refusal that costs nothing, or a looping client would top itself up.
+        # it, so it exists. Over the cap, nothing is written at all, or a
+        # looping client would keep topping its own counter up.
         db.rollback()
         raise too_many_attempts()
 
-    db.commit()
     if not row.reserved:
-        # The attempt is spent and committed; only the paper is refused. The
-        # plan comes from the row the statement locked, so a subscription that
-        # changed mid-request picks the right code.
+        # No slot, so no attempt either: every `SET` above wrote the row's own
+        # value back and there is nothing worth keeping. Roll back rather than
+        # commit a no-op, so a free user hammering 402s neither accrues
+        # attempts nor churns row versions. The plan comes from the row the
+        # statement locked, so a subscription that changed mid-request picks
+        # the right code.
+        db.rollback()
         raise over_limit(row.plan)
+
+    db.commit()
 
     # The counters on the ORM row are stale now; send a later read of them back
     # to the database rather than serving the pre-reservation numbers.

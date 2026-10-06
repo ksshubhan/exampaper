@@ -559,12 +559,14 @@ class TestGeneratePaperLimits(LimitsTestCase):
 
 
 class TestAttemptCap(LimitsTestCase):
-    """The abuse ceiling: 20 attempts a day, on every plan, never refunded.
+    """The abuse ceiling: 20 started generations a day, every plan, no refunds.
 
     `day_generations` cannot bound work done, because a generation that fails
     or whose client disappears is refunded — so generate → disconnect → repeat
     costs nothing and can run forever. `day_attempts` is the counter that is
-    spent before any work starts and never given back.
+    spent when a slot is reserved, before any work starts, and never given
+    back. A request refused before it reserves anything starts no work, so it
+    moves no counter at all.
     """
 
     def loop(self, user: User, times: int) -> None:
@@ -621,7 +623,7 @@ class TestAttemptCap(LimitsTestCase):
             self.counters(user)[:2], (0, 0), "a paper nobody got is not charged"
         )
         self.assertEqual(
-            self.attempts(user), (1, TODAY), "but the work was still asked for"
+            self.attempts(user), (1, TODAY), "but the work was still done"
         )
 
     def test_refund_does_not_return_the_attempt(self) -> None:
@@ -653,12 +655,55 @@ class TestAttemptCap(LimitsTestCase):
         )
         self.assert_too_many(user)
 
-    def test_a_refused_generation_still_spends_an_attempt(self) -> None:
-        """402 is an attempt: asking for a paper you cannot have is still asking."""
+    def test_a_refused_generation_spends_no_attempt(self) -> None:
+        """402 reserves nothing, so it starts no work and costs no attempt.
+
+        Only a reserved slot counts. Charging for the refusal would let a free
+        user who has spent their paper burn through the day's attempts without
+        any compute being done on their behalf.
+        """
         user = self.given_user(total_generations=1)  # free, and already spent
         with self.assertRaises(HTTPException) as caught:
             self.reserve(user)
         self.assertEqual(caught.exception.status_code, 402)
+        self.assertEqual(self.attempts(user), (0, None))
+
+    def test_a_refused_generation_leaves_a_stale_attempt_date_alone(self) -> None:
+        """Yesterday's count is not rebased by a request that reserved nothing."""
+        yesterday = TODAY - timedelta(days=1)
+        user = self.given_user(
+            total_generations=1, day_attempts=7, attempt_date=yesterday
+        )
+        with self.assertRaises(HTTPException) as caught:
+            self.reserve(user)
+        self.assertEqual(caught.exception.status_code, 402)
+        self.assertEqual(self.attempts(user), (7, yesterday))
+
+    def test_a_free_user_refused_all_day_can_generate_once_upgraded(self) -> None:
+        """Twenty 402s must not cost the day they finally pay.
+
+        The free paper is spent, so every request is refused and reserves
+        nothing. If those refusals counted, the upgrade would land on an
+        account already at the ceiling and the first paying generation would be
+        a 429 — exactly the user we least want to turn away.
+        """
+        user = self.given_user(total_generations=1)  # free, and already spent
+        for _ in range(20):
+            with self.assertRaises(HTTPException) as caught:
+                self.reserve(user)
+            self.assertEqual(caught.exception.status_code, 402)
+        self.assertEqual(self.attempts(user), (0, None))
+
+        with self.Session() as webhook:  # Stripe says they subscribed
+            webhook.query(User).filter_by(
+                clerk_user_id=user.clerk_user_id
+            ).update({"plan": PLAN_MONTHLY})
+            webhook.commit()
+
+        reservation = self.reserve(user)
+        self.assertEqual(reservation.plan, PLAN_MONTHLY)
+        self.assertEqual(reservation.day_generations, 1)
+        self.assertEqual(reservation.day_attempts, 1)
         self.assertEqual(self.attempts(user), (1, TODAY))
 
     def test_an_attempt_over_the_cap_adds_nothing(self) -> None:

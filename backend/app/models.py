@@ -56,9 +56,10 @@ class User(Base):
     )
     #: Europe/London calendar date that `day_generations` counts.
     day_date: Mapped[date | None] = mapped_column(Date, nullable=True)
-    #: Generation attempts today, successful or not. Counted separately from
-    #: `day_generations` because an attempt is never refunded: a refund gives
-    #: back the paper, not the right to ask for another one.
+    #: Generations *started* today — one per reserved slot, on every plan.
+    #: Counted separately from `day_generations` because it is never refunded:
+    #: a refund gives back the paper, not the right to ask for another one. A
+    #: request refused before it reserved anything never reaches this counter.
     day_attempts: Mapped[int] = mapped_column(
         Integer, nullable=False, server_default="0"
     )
