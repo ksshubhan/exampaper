@@ -454,6 +454,23 @@ whose correctness depends on how the API is run rather than on what it does.
 - Set `MAX_CONCURRENT_RENDERS` from the box's memory, not from its CPUs: a
   Chromium printing an A4 paper peaks a few hundred MB, and overcommitting
   memory is an OOM kill of the whole API rather than a slow queue.
+- **Migrate the production database:** `alembic upgrade head` before the new
+  code serves traffic. Brings in `0002_attempt_cap` and `0003_render_cap`; the
+  dev database was migrated by hand, production never has been.
+- **Pin one Python version.** The dev server runs in `.venv` (3.13) but the
+  suite runs in `.venv-dev` (3.14). Production uses the version the suite
+  passed on; rebuild both venvs from `requirements.txt` to match.
+- **No `ANTHROPIC_API_KEY` in production.** Nothing deployed calls a model;
+  only `probe.py` uses it, and that never ships.
+- **Live Stripe keys + production webhook endpoint**, with the new
+  `STRIPE_WEBHOOK_SECRET` from that endpoint (not the `stripe listen` one).
+  Clerk production instance likewise.
+- **Every env var in `backend/.env.example` is set** in the host's environment,
+  including the caps (`MAX_DAILY_ATTEMPTS`, `MAX_DAILY_RENDERS`,
+  `RENDER_TIMEOUT_SECONDS`, `MAX_CONCURRENT_RENDERS`,
+  `RENDER_SLOT_WAIT_SECONDS`) so production does not run on silent defaults.
+- **Chromium installed on the host** for Playwright, and one real PDF
+  downloaded from the public URL and opened before telling anyone it is live.
 
 ---
 
