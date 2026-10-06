@@ -136,8 +136,14 @@ async def render_pdf_endpoint(
 
     The client renders the document to HTML and hands us its CSS; we run it
     through headless Chromium so no browser-injected header/footer appears.
+
+    Auth is required but no generation slot is taken: re-downloading a paper
+    already generated is free. The watermark footer is stamped with the signed-in
+    account's email, read from the session and never from `req` — the body is
+    attacker-controlled, so a caller must not be able to name someone else or
+    leave the footer off.
     """
-    pdf = await run_in_threadpool(render_pdf, req.html, req.css)
+    pdf = await run_in_threadpool(render_pdf, req.html, req.css, email=user.email)
     return Response(
         content=pdf,
         media_type="application/pdf",
