@@ -32,6 +32,14 @@ DEFAULT_MAX_DAILY_RENDERS = 50
 #: attacker-supplied HTML and CSS, so the only safe assumption is that a
 #: document can take forever.
 DEFAULT_RENDER_TIMEOUT_SECONDS = 20
+#: Renders allowed to run at the same time, across all users. The daily cap
+#: bounds how many a user gets, not how many at once; each one is a Chromium
+#: holding a few hundred megabytes, so this is what keeps a burst from being
+#: an out-of-memory kill. Deliberately small: a render takes a second or two,
+#: so a queue clears fast.
+DEFAULT_MAX_CONCURRENT_RENDERS = 2
+#: How long a request waits for one of those slots before giving up with 503.
+DEFAULT_RENDER_SLOT_WAIT_SECONDS = 10
 
 
 def _csv_env(name: str) -> tuple[str, ...]:
@@ -84,6 +92,11 @@ class Settings:
     max_daily_renders: int
     #: Seconds one render may take before it is killed and answered 504.
     render_timeout_seconds: int
+    #: Renders allowed to run concurrently, process-wide. In-process state,
+    #: which is only correct because production runs a single uvicorn worker.
+    max_concurrent_renders: int
+    #: Seconds a request waits for a concurrency slot before answering 503.
+    render_slot_wait_seconds: int
 
 
 @lru_cache
@@ -113,5 +126,11 @@ def get_settings() -> Settings:
         ),
         render_timeout_seconds=_int_env(
             "RENDER_TIMEOUT_SECONDS", DEFAULT_RENDER_TIMEOUT_SECONDS
+        ),
+        max_concurrent_renders=_int_env(
+            "MAX_CONCURRENT_RENDERS", DEFAULT_MAX_CONCURRENT_RENDERS
+        ),
+        render_slot_wait_seconds=_int_env(
+            "RENDER_SLOT_WAIT_SECONDS", DEFAULT_RENDER_SLOT_WAIT_SECONDS
         ),
     )

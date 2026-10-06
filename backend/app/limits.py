@@ -25,12 +25,16 @@ Two counters, counting different things:
   went on to do work — spends one: a refusal (402, 429) starts no generation
   and costs nothing, which also means a free user who has run out cannot be
   locked out of the day they upgrade.
-* `day_renders` — PDFs *rendered*, on every plan. Also never refunded.
-  Rendering reserves no generation slot, because re-downloading a paper you
-  already own has to stay free; that leaves one headless Chromium per call
-  with nothing bounding it at all. This counter is that bound, and it is
-  separate from the other two so a day of legitimate re-downloading cannot
-  eat into the allowance for making papers.
+* `day_renders` — PDFs *rendered*, on every plan. Rendering reserves no
+  generation slot, because re-downloading a paper you already own has to stay
+  free; that leaves one headless Chromium per call with nothing bounding it at
+  all. This counter is that bound, and it is separate from the other two so a
+  day of legitimate re-downloading cannot eat into the allowance for making
+  papers. It buys a *browser launch*, so a render that fails or times out
+  keeps it — the launch happened. The one refundable case is a request turned
+  away at the concurrency gate, which never launched anything; that refund is
+  safe to offer because `hold_render_slot` allows an account only one
+  in-flight render, so nobody can mine it in a loop.
 """
 
 from __future__ import annotations
@@ -140,6 +144,20 @@ _RESERVE_SQL = text(
     """
 )
 
+# Renders are given back only when none was started — see `RenderCount.refund`.
+# Clamped and day-guarded like the generation refund below, and for the same
+# reason: a refund that straddles midnight must not borrow from tomorrow.
+_REFUND_RENDER_SQL = text(
+    """
+    UPDATE users SET
+        day_renders = CASE
+            WHEN render_date = :day AND day_renders > 0 THEN day_renders - 1
+            ELSE day_renders
+        END
+    WHERE id = :user_id
+    """
+)
+
 # Clamped at zero, and the day counter moves only if the row is still on the day
 # the slot was taken from — a refund that straddles midnight must not borrow
 # from tomorrow's allowance. `day_attempts` is deliberately absent: an attempt
@@ -217,6 +235,38 @@ class Reservation:
             return
         self._refunded = True
         self.db.execute(_REFUND_SQL, {"user_id": self.user_id, "day": self.day})
+        self.db.commit()
+
+    @property
+    def refunded(self) -> bool:
+        return self._refunded
+
+
+@dataclass
+class RenderCount:
+    """One spent render, and the only way to give it back.
+
+    Returned by `count_render` so the route can hand the render back in the
+    one case that deserves it: refused at the concurrency gate, with no
+    browser ever launched. Every other outcome keeps it.
+    """
+
+    db: Session
+    user_id: uuid.UUID
+    #: The Europe/London day the render was counted against.
+    day: date
+    #: Renders spent today, this one included.
+    day_renders: int
+    _refunded: bool = field(default=False, repr=False)
+
+    def refund(self) -> None:
+        """Give the render back. Safe to call more than once."""
+        if self._refunded:
+            return
+        self._refunded = True
+        self.db.execute(
+            _REFUND_RENDER_SQL, {"user_id": self.user_id, "day": self.day}
+        )
         self.db.commit()
 
     @property
@@ -330,13 +380,13 @@ def reserve_generation(
 def count_render(
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
-) -> int:
+) -> RenderCount:
     """FastAPI dependency: spend one render, or refuse the request.
 
-    Returns the number of renders spent today, this one included. Nothing to
-    hand back, so unlike `reserve_generation` there is no object to hold: the
-    count is taken before Chromium starts and a failed render keeps it, because
-    launching the browser is where the cost is.
+    The count is taken before Chromium starts, and a render that then fails or
+    overruns its budget keeps it, because launching the browser is where the
+    cost is. The returned `RenderCount` exists for the one exception: a request
+    turned away by the global concurrency gate, which never launched anything.
     """
     settings = get_settings()
     today = london_today()
@@ -359,4 +409,6 @@ def count_render(
     db.commit()
     # The ORM row's counters are stale now; the next read goes to the database.
     db.expire(user)
-    return row.day_renders
+    return RenderCount(
+        db=db, user_id=user.id, day=today, day_renders=row.day_renders
+    )

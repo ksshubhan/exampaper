@@ -34,12 +34,13 @@ export const DAILY_LIMIT_MESSAGE =
 const DAILY_LIMIT_CODES = ['daily_limit_reached', 'too_many_attempts']
 
 /**
- * The three ways a download can be refused, and what each one says.
+ * The ways a download can be refused, and what each one says.
  *
  * None of them opens the upgrade popup. `too_many_renders` is the abuse
  * ceiling on rendering — an upsell is the wrong answer to it, and a
- * subscriber who meets it has nothing left to buy — while the other two are
- * faults in one particular document, which no subscription would fix.
+ * subscriber who meets it has nothing left to buy. The rest are either a
+ * fault in one particular document or a queue, and no subscription fixes
+ * either. The last two are the only ones worth retrying immediately.
  */
 export const DOWNLOAD_LIMIT_MESSAGE =
   "You've reached today's download limit. It resets at midnight."
@@ -47,6 +48,9 @@ export const DOWNLOAD_TOO_LARGE_MESSAGE =
   'This paper is too big to turn into a PDF. Try generating a shorter one.'
 export const DOWNLOAD_TIMEOUT_MESSAGE =
   'Building the PDF took too long. Please try the download again.'
+export const DOWNLOAD_IN_PROGRESS_MESSAGE =
+  'Another download is still running. Give it a moment.'
+export const DOWNLOAD_BUSY_MESSAGE = 'Busy — try again in a moment.'
 
 /** 503 `billing_unavailable` — Stripe is unreachable or misconfigured. */
 export const BILLING_UNAVAILABLE_MESSAGE =
@@ -92,6 +96,10 @@ export function downloadErrorMessage(
         return DOWNLOAD_TOO_LARGE_MESSAGE
       case 'render_timeout':
         return DOWNLOAD_TIMEOUT_MESSAGE
+      case 'render_in_progress':
+        return DOWNLOAD_IN_PROGRESS_MESSAGE
+      case 'render_busy':
+        return DOWNLOAD_BUSY_MESSAGE
     }
   }
   return error instanceof Error ? error.message : fallback

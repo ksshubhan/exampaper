@@ -21,6 +21,7 @@ from .billing import router as billing_router
 from .config import get_settings
 from .generators.registry import topics_catalog
 from .limits import (
+    RenderCount,
     Reservation,
     count_render,
     pending_reservation,
@@ -29,6 +30,7 @@ from .limits import (
 from .models import User
 from .pdf import RenderTimeout, render_pdf
 from .render_guard import MAX_RENDER_BODY_BYTES, TOO_LARGE_DETAIL, RenderBodyLimit
+from .render_slots import BUSY_DETAIL, RenderBusy, hold_render_slot, render_slot
 from .schema import GeneratePaperRequest, Paper
 
 app = FastAPI(title="ExamPaper API", version="0.0.1")
@@ -145,10 +147,14 @@ class RenderPdfRequest(BaseModel):
     filename: str = "paper.pdf"
 
 
-@api.post("/render-pdf", dependencies=[Depends(count_render)])
+# `hold_render_slot` is declared here, not as a parameter, so it resolves
+# ahead of `count_render`: an account that already has a render in flight is
+# turned away before it spends one.
+@api.post("/render-pdf", dependencies=[Depends(hold_render_slot)])
 async def render_pdf_endpoint(
     req: RenderPdfRequest,
     user: User = Depends(get_current_user),
+    render: RenderCount = Depends(count_render),
 ) -> Response:
     """Print a paper (or mark scheme) to a clean, chrome-free A4 PDF.
 
@@ -164,9 +170,10 @@ async def render_pdf_endpoint(
     Free is not unlimited, though: every call launches a Chromium, so
     `count_render` spends one of the day's renders first — and keeps it,
     because the launch is the cost whether or not a PDF comes out. The body
-    was size-checked before it was parsed (see `render_guard`), and the render
-    itself runs under a wall-clock budget; overrunning it is a 504, not a
-    worker pinned forever.
+    was size-checked before it was parsed (see `render_guard`), the account is
+    allowed one render at a time and the box a handful (see `render_slots`),
+    and the render itself runs under a wall-clock budget; overrunning it is a
+    504, not a worker pinned forever.
     """
     # A backstop, not the guard: the middleware already refused anything this
     # large without parsing it, which is the check that protects memory. This
@@ -179,9 +186,20 @@ async def render_pdf_endpoint(
         )
 
     try:
-        pdf = await run_in_threadpool(
-            render_pdf, req.html, req.css, email=user.email
-        )
+        # The slot is held around the threadpool hop only: queueing is not the
+        # document being slow, so it is not charged to the render's budget.
+        async with render_slot():
+            pdf = await run_in_threadpool(
+                render_pdf, req.html, req.css, email=user.email
+            )
+    except RenderBusy as exc:
+        # Nothing was launched, so this is the one refusal that gives the
+        # render back. Safe against a loop: one in-flight render per account.
+        render.refund()
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=BUSY_DETAIL,
+        ) from exc
     except RenderTimeout as exc:
         raise HTTPException(
             status_code=status.HTTP_504_GATEWAY_TIMEOUT,

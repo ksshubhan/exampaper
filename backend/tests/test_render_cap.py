@@ -175,14 +175,19 @@ class RenderCapTestCase(unittest.TestCase):
             return fresh.day_renders, fresh.render_date
 
     def spend_render(self, user: User) -> int:
-        """Call the dependency the way FastAPI would, minus FastAPI."""
+        """Spend one render, the way FastAPI would, minus FastAPI.
+
+        Returns the day's count. The `RenderCount` the dependency hands back
+        also carries a refund, which only the concurrency gate uses — see
+        `test_render_concurrency.py`.
+        """
         with self.Session() as session:
             attached = (
                 session.query(User)
                 .filter_by(clerk_user_id=user.clerk_user_id)
                 .one()
             )
-            return count_render(user=attached, db=session)
+            return count_render(user=attached, db=session).day_renders
 
     def token_for(self, user: User) -> str:
         return make_token(sub=user.clerk_user_id, email=user.email)

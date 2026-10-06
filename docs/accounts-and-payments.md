@@ -406,6 +406,55 @@ know the guard ran first; a document that wedges the renderer returns 504 inside
 its budget and leaves no Chromium process behind; and `day_renders` resets the
 next Europe/London day.
 
+### Render concurrency
+
+The daily cap bounds how many renders a user gets, not how many run at once. One
+session can fire its 50 in parallel, and the threadpool will start up to ~40
+Chromiums together (each a few hundred MB). On a small deploy box that is an
+out-of-memory kill of the whole API, well inside every other limit.
+
+- **Per user:** at most **1** render in flight. A second concurrent request →
+  **HTTP 429** `{"detail": {"code": "render_in_progress"}}`, checked before
+  `count_render` so a refused request spends no render.
+- **Global:** at most `MAX_CONCURRENT_RENDERS` (env, default **2**) child
+  processes at once, via an `asyncio.Semaphore` around the threadpool hop. A
+  request that cannot get a slot within 10 s (`RENDER_SLOT_WAIT_SECONDS`, so a
+  test can shorten it) → **HTTP 503**
+  `{"detail": {"code": "render_busy"}}`, and its render is refunded (nothing was
+  launched). Waiting for a slot does not count against the 20 s render budget.
+  The refund is safe to offer precisely *because* of the per-user limit above:
+  an account can only ever have one request queued, so there is no loop that
+  mines free renders out of 503s.
+- In-process state is fine: production runs one uvicorn worker. Note that in
+  the deploy checklist; more workers would need this moved to Postgres.
+
+Frontend: both are plain inline messages on the download button ("Another
+download is still running" / "Busy — try again in a moment"), no popup.
+
+Done when: two simultaneous renders by one user give one 200 and one 429
+`render_in_progress` with `day_renders` up by exactly 1; with
+`MAX_CONCURRENT_RENDERS=1` and a stubbed slow renderer, a second user's request
+waits and then succeeds, and one that waits past 10 s is 503 `render_busy` with
+its render refunded; and the full suite passes.
+
+---
+
+## Deploy checklist
+
+Started by the render concurrency gate, which is the first thing in this spec
+whose correctness depends on how the API is run rather than on what it does.
+
+- **Run exactly one uvicorn worker.** The per-user in-flight set and the global
+  render semaphore are process-local (`app/render_slots.py`), so N workers mean
+  N × `MAX_CONCURRENT_RENDERS` Chromiums and one render in flight per user *per
+  worker*. If more than one worker is ever needed, both pieces of state move to
+  Postgres first — an advisory lock for the per-user limit and a counted table
+  or a connection-pool bound for the global one. Scale with memory per box
+  before worker count.
+- Set `MAX_CONCURRENT_RENDERS` from the box's memory, not from its CPUs: a
+  Chromium printing an A4 paper peaks a few hundred MB, and overcommitting
+  memory is an OOM kill of the whole API rather than a slow queue.
+
 ---
 
 ## Not in this spec (→ later.md)
