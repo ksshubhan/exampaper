@@ -39,6 +39,7 @@ Added after the Section 0 audit:
 ## Fences (all sections)
 
 - Do not touch `probe.py` or `.venv`.
+- Never run `git checkout .`, `git reset --hard`, or `git stash`. To mutation-test, revert the line by hand and restore it.
 - Do not change question generation, sympy verification, blueprint logic, or diagram code.
 - Only change `PaperPreview.tsx` / `WorksheetDocument.tsx` / the print stylesheet in
   Section 7. The footer itself is server-side, so these may need no change at all;
@@ -341,6 +342,48 @@ Count attempts separately from successes, and never refund an attempt.
 Done when: a test reserves and refunds 20 times, then the 21st attempt is 429
 `too_many_attempts` even though `total_generations` is still 0; and the counter
 resets the next Europe/London day.
+
+### Render cap
+
+`/api/render-pdf` is signed-in but otherwise free and unlimited, and every call
+launches a headless Chromium, renders attacker-supplied HTML + CSS and prints
+twice when the page count is odd. It is the most expensive endpoint we have per
+request and the only one with no ceiling at all: re-downloading a paper costs
+nothing *by design*, which also means a script with one valid session can hold
+the box down with a loop of large renders. Three limits, all on this endpoint.
+
+- **Per-user daily cap.** Add to `users`: `day_renders` int not null default 0,
+  `render_date` date null (Europe/London, same rebase-on-a-new-day rule as
+  `day_date` and `attempt_date`). `MAX_DAILY_RENDERS=50` (env var, backend
+  `.env` + `.env.example`, `DEFAULT_MAX_DAILY_RENDERS` in `config.py`). Applies
+  to **every** plan, free and monthly alike — like the attempt cap it is an
+  abuse ceiling, not an allowance, and 50 is far above a day of real
+  re-downloading (a paper plus its mark scheme per generation, times the
+  monthly plan's 10, is 20). Increment it in one atomic `UPDATE` before
+  Chromium starts, and never refund it: a failed render still cost the browser
+  launch. Over the cap → **HTTP 429**
+  `{"detail": {"code": "too_many_renders"}}`.
+- **Max request body.** `html` + `css` over **2 MB** combined → **HTTP 413**
+  `{"detail": {"code": "render_too_large"}}`, checked before the counter and
+  before Chromium. A real paper's HTML is a few hundred KB; the field is
+  attacker-controlled and currently unbounded, so this is also what stops a
+  body big enough to exhaust memory during parse.
+- **Hard render timeout.** Wrap the whole `render_pdf` call — launch, both print
+  passes, close — in a **20 s** budget. On expiry, kill the browser and return
+  **HTTP 504** `{"detail": {"code": "render_timeout"}}`. CSS can loop or blow up
+  layout arbitrarily; without a wall clock a single request pins a worker
+  forever. The existing `browser.close()` in the `finally` must still run, so
+  the timeout has to fire somewhere that unwinds `render_pdf`, not around the
+  threadpool hop only.
+
+Frontend: all three are plain inline messages on the download button, no upgrade
+popup — `too_many_renders` is suspected abuse and the other two are faults, and
+none of them is something a subscription fixes.
+
+Done when: the 51st render of a Europe/London day is 429 `too_many_renders`
+while generation still works; a 3 MB body is 413 without launching Chromium; a
+document whose CSS never settles returns 504 within ~20 s and leaves no
+Chromium process behind; and `day_renders` resets the next day.
 
 ---
 
