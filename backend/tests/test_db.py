@@ -88,11 +88,35 @@ class TestMigrationMatchesModels(unittest.TestCase):
         cls.sql = _migration_sql()
 
     def _migration_table(self, name: str) -> str:
+        """The table as `upgrade head` leaves it: created, then altered.
+
+        Columns added by a later revision arrive as `ALTER TABLE … ADD COLUMN`,
+        so they are folded back into the `CREATE TABLE` body before comparing.
+        Only `ADD COLUMN` is understood; `test_only_add_column_alters` fails if
+        a migration starts doing anything else to a table, rather than letting
+        that change go unchecked.
+        """
         match = re.search(
             rf"CREATE TABLE {name} \((.*?)\n\);", self.sql, re.S
         )
         self.assertIsNotNone(match, f"migration does not create {name}")
-        return f"CREATE TABLE {name} ({match.group(1)}\n)"
+        body = match.group(1)
+        for column in re.findall(
+            rf"ALTER TABLE {name} ADD COLUMN (.*?);", self.sql, re.S
+        ):
+            body += f",\n    {column}"
+        return f"CREATE TABLE {name} ({body}\n)"
+
+    def test_only_add_column_alters(self) -> None:
+        """Every ALTER in the migrations is an ADD COLUMN we know how to fold."""
+        alters = re.findall(r"ALTER TABLE \w+ (.*?);", self.sql, re.S)
+        unfolded = [a for a in alters if not a.startswith("ADD COLUMN ")]
+        self.assertEqual(
+            unfolded,
+            [],
+            "this test can only reconstruct ADD COLUMN; teach "
+            "_migration_table about these before trusting it again",
+        )
 
     def test_tables_present(self) -> None:
         for name in ("users", "stripe_events"):
@@ -125,6 +149,8 @@ class TestMigrationMatchesModels(unittest.TestCase):
                 "total_generations",
                 "day_generations",
                 "day_date",
+                "day_attempts",
+                "attempt_date",
                 "created_at",
             ],
         )
@@ -134,8 +160,11 @@ class TestMigrationMatchesModels(unittest.TestCase):
         )
 
     def test_downgrade_is_reversible(self) -> None:
-        self.assertIn("DROP TABLE users", _downgrade_sql())
-        self.assertIn("DROP TABLE stripe_events", _downgrade_sql())
+        sql = _downgrade_sql()
+        self.assertIn("DROP COLUMN attempt_date", sql)
+        self.assertIn("DROP COLUMN day_attempts", sql)
+        self.assertIn("DROP TABLE users", sql)
+        self.assertIn("DROP TABLE stripe_events", sql)
 
 
 def _downgrade_sql() -> str:
@@ -145,7 +174,7 @@ def _downgrade_sql() -> str:
     buffer = io.StringIO()
     try:
         with contextlib.redirect_stdout(buffer):
-            command.downgrade(_alembic_config(), "0001_initial:base", sql=True)
+            command.downgrade(_alembic_config(), "head:base", sql=True)
     finally:
         if previous is None:
             os.environ.pop("DATABASE_URL", None)

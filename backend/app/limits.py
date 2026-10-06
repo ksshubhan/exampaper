@@ -12,6 +12,16 @@ read `total_generations = 0` and all ten succeed.
 The plan is read *inside* that statement rather than from the ORM object, so a
 subscription that changed between authentication and reservation is honoured
 without a retry loop.
+
+Two counters, counting different things:
+
+* `day_generations` / `total_generations` — papers *delivered*. Refundable, so
+  a parent who closes the tab keeps their free paper.
+* `day_attempts` — papers *asked for*, on every plan. Never refunded. Because
+  the refund gives the reserved slot straight back, a script could otherwise
+  loop generate → disconnect → generate for unbounded compute at no cost; the
+  attempt cap is what bounds that. It is an abuse ceiling, so it is checked
+  first and its refusal (`too_many_attempts`) outranks the plan's own.
 """
 
 from __future__ import annotations
@@ -37,6 +47,7 @@ LONDON = ZoneInfo("Europe/London")
 
 UPGRADE_REQUIRED_DETAIL = {"code": "upgrade_required"}
 DAILY_LIMIT_REACHED_DETAIL = {"code": "daily_limit_reached"}
+TOO_MANY_ATTEMPTS_DETAIL = {"code": "too_many_attempts"}
 
 #: Where the live reservation is parked on `request.state`, so a request that
 #: dies before the route body runs can still give the slot back. See the
@@ -51,27 +62,71 @@ def london_today() -> date:
 
 # `day_generations` only counts today: any row whose `day_date` is not today is
 # treated as zero and rebased, which is the daily reset — no cron job needed.
+# `day_attempts` resets the same way, off its own `attempt_date`.
+
+#: The plan's own allowance, evaluated against the row as it stands.
+_SLOT_AVAILABLE = """
+    CASE
+        WHEN before.plan = :monthly_plan THEN before.day_count < :daily_limit
+        ELSE before.total_generations < :free_limit
+    END
+"""
+
+# The `before` CTE is what makes two decisions out of one statement. `FOR
+# UPDATE` takes the lock and — in READ COMMITTED, after waiting on a concurrent
+# writer — re-reads the freshly committed row, so the flags below are computed
+# from current values. They have to come from the CTE rather than from
+# `RETURNING`: `RETURNING` sees the *updated* row, where `total_generations`
+# has already been incremented and `< :free_limit` would read false for the
+# very request that just succeeded.
+#
+# The attempt is recorded whether or not a slot was free, so a user looping
+# into 402s still walks into the cap. The only way not to spend an attempt is
+# to already be over the cap — which is the point.
 _RESERVE_SQL = text(
-    """
+    f"""
+    WITH before AS (
+        SELECT
+            id,
+            plan,
+            total_generations,
+            CASE WHEN day_date = :today THEN day_generations ELSE 0 END
+                AS day_count,
+            CASE WHEN attempt_date = :today THEN day_attempts ELSE 0 END
+                AS attempt_count
+        FROM users
+        WHERE id = :user_id
+        FOR UPDATE
+    )
     UPDATE users SET
-        total_generations = total_generations + 1,
-        day_generations =
-            CASE WHEN day_date = :today THEN day_generations + 1 ELSE 1 END,
-        day_date = :today
-    WHERE id = :user_id
-      AND CASE
-            WHEN plan = :monthly_plan THEN
-                (CASE WHEN day_date = :today THEN day_generations ELSE 0 END)
-                    < :daily_limit
-            ELSE total_generations < :free_limit
-          END
-    RETURNING plan, total_generations, day_generations
+        day_attempts = before.attempt_count + 1,
+        attempt_date = :today,
+        total_generations = users.total_generations
+            + CASE WHEN {_SLOT_AVAILABLE} THEN 1 ELSE 0 END,
+        day_generations = CASE
+            WHEN {_SLOT_AVAILABLE} THEN before.day_count + 1
+            ELSE users.day_generations
+        END,
+        day_date = CASE
+            WHEN {_SLOT_AVAILABLE} THEN :today
+            ELSE users.day_date
+        END
+    FROM before
+    WHERE users.id = before.id
+      AND before.attempt_count < :max_attempts
+    RETURNING
+        users.plan,
+        users.total_generations,
+        users.day_generations,
+        users.day_attempts,
+        ({_SLOT_AVAILABLE}) AS reserved
     """
 )
 
 # Clamped at zero, and the day counter moves only if the row is still on the day
 # the slot was taken from — a refund that straddles midnight must not borrow
-# from tomorrow's allowance.
+# from tomorrow's allowance. `day_attempts` is deliberately absent: an attempt
+# happened, and no later outcome unhappens it.
 _REFUND_SQL = text(
     """
     UPDATE users SET
@@ -105,10 +160,16 @@ class Reservation:
     plan: str
     total_generations: int
     day_generations: int
+    #: Attempts spent today, this one included. Not refundable.
+    day_attempts: int
     _refunded: bool = field(default=False, repr=False)
 
     def refund(self) -> None:
-        """Give the slot back. Safe to call more than once."""
+        """Give the slot back. Safe to call more than once.
+
+        The *attempt* is not given back: the work was asked for, and that is
+        what the attempt cap counts.
+        """
         if self._refunded:
             return
         self._refunded = True
@@ -120,12 +181,16 @@ class Reservation:
         return self._refunded
 
 
-def current_plan(db: Session, user_id: uuid.UUID, fallback: str) -> str:
-    """The plan as the database has it right now, for choosing the error code."""
-    plan = db.execute(
-        text("SELECT plan FROM users WHERE id = :user_id"), {"user_id": user_id}
-    ).scalar_one_or_none()
-    return plan or fallback
+def too_many_attempts() -> HTTPException:
+    """The refusal for the abuse ceiling. Same for every plan.
+
+    No upsell: an upgrade is the wrong answer to suspected abuse, and a
+    subscriber who somehow reaches 20 attempts has nothing left to buy.
+    """
+    return HTTPException(
+        status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+        detail=TOO_MANY_ATTEMPTS_DETAIL,
+    )
 
 
 def over_limit(plan: str) -> HTTPException:
@@ -167,16 +232,24 @@ def reserve_generation(
             "monthly_plan": PLAN_MONTHLY,
             "daily_limit": settings.daily_generation_limit,
             "free_limit": settings.free_generation_limit,
+            "max_attempts": settings.max_daily_attempts,
         },
     ).one_or_none()
 
     if row is None:
-        # Nothing was written, but the SELECT that found the user opened a
-        # transaction; close it before reading the plan back.
+        # The only `WHERE` the row can fail — `get_current_user` just loaded
+        # it, so it exists. Nothing was written: the attempt cap is the one
+        # refusal that costs nothing, or a looping client would top itself up.
         db.rollback()
-        raise over_limit(current_plan(db, user_id, user.plan))
+        raise too_many_attempts()
 
     db.commit()
+    if not row.reserved:
+        # The attempt is spent and committed; only the paper is refused. The
+        # plan comes from the row the statement locked, so a subscription that
+        # changed mid-request picks the right code.
+        raise over_limit(row.plan)
+
     # The counters on the ORM row are stale now; send a later read of them back
     # to the database rather than serving the pre-reservation numbers.
     db.expire(user)
@@ -187,6 +260,7 @@ def reserve_generation(
         plan=row.plan,
         total_generations=row.total_generations,
         day_generations=row.day_generations,
+        day_attempts=row.day_attempts,
     )
     setattr(request.state, STATE_ATTR, reservation)
     return reservation

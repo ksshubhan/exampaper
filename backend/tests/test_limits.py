@@ -9,6 +9,9 @@ database, so there is nothing to learn from a fake):
 * `TestGeneratePaper*` drives `POST /api/generate-paper` and pins the status
   codes and bodies the frontend keys off.
 
+`TestAttemptCap` covers the pre-deploy attempt ceiling, which is the one
+counter a refund does not touch.
+
 Needs `TEST_DATABASE_URL`: these tests create and drop tables, so they refuse
 to touch `DATABASE_URL`.
 """
@@ -94,6 +97,7 @@ class LimitsTestCase(unittest.TestCase):
         limits.london_today = lambda: self.today
         os.environ["FREE_GENERATION_LIMIT"] = "1"
         os.environ["DAILY_GENERATION_LIMIT"] = "10"
+        os.environ["MAX_DAILY_ATTEMPTS"] = "20"
         os.environ["AUTHORIZED_PARTIES"] = "http://localhost:5173"
         get_settings.cache_clear()
 
@@ -113,6 +117,8 @@ class LimitsTestCase(unittest.TestCase):
         total_generations: int = 0,
         day_generations: int = 0,
         day_date: date | None = None,
+        day_attempts: int = 0,
+        attempt_date: date | None = None,
     ) -> User:
         with self.Session() as s:
             user = User(
@@ -122,6 +128,8 @@ class LimitsTestCase(unittest.TestCase):
                 total_generations=total_generations,
                 day_generations=day_generations,
                 day_date=day_date,
+                day_attempts=day_attempts,
+                attempt_date=attempt_date,
             )
             s.add(user)
             s.commit()
@@ -134,6 +142,10 @@ class LimitsTestCase(unittest.TestCase):
     def counters(self, user: User) -> tuple[int, int, date | None]:
         fresh = self.row(user)
         return fresh.total_generations, fresh.day_generations, fresh.day_date
+
+    def attempts(self, user: User) -> tuple[int, date | None]:
+        fresh = self.row(user)
+        return fresh.day_attempts, fresh.attempt_date
 
     def reserve(self, user: User) -> Reservation:
         """Call the dependency the way FastAPI would, minus FastAPI.
@@ -152,6 +164,38 @@ class LimitsTestCase(unittest.TestCase):
 
     def token_for(self, user: User) -> str:
         return make_token(sub=user.clerk_user_id, email=user.email)
+
+    # --- driving the route without a server ---------------------------------
+    #
+    # `TestClient` can neither disconnect nor cancel, so the tests that care
+    # about an abandoned request call the endpoint coroutine directly with a
+    # `receive` channel they control.
+
+    def endpoint(self, reservation: Reservation, receive):
+        """The route's coroutine, with a request whose client we control."""
+        request = Request(
+            {
+                "type": "http",
+                "method": "POST",
+                "path": "/api/generate-paper",
+                "headers": [],
+            },
+            receive=receive,
+        )
+        return main.generate_paper(
+            GeneratePaperRequest(**PAPER_BODY), request, reservation=reservation
+        )
+
+    @staticmethod
+    async def still_connected():
+        """A client that is there but has nothing more to say."""
+        await asyncio.sleep(3600)
+        raise AssertionError("unreachable")  # pragma: no cover
+
+    @staticmethod
+    async def gone():
+        """A client that has hung up."""
+        return {"type": "http.disconnect"}
 
 
 class TestReserveFree(LimitsTestCase):
@@ -360,37 +404,7 @@ class TestConcurrency(LimitsTestCase):
 
 
 class TestAbandonedRequests(LimitsTestCase):
-    """A paper nobody receives must not be charged for.
-
-    Both exits are tested against the endpoint coroutine directly, because
-    neither is reachable through `TestClient`: it never disconnects, and it
-    never cancels the task it is awaiting.
-    """
-
-    def endpoint(self, reservation: Reservation, receive):
-        """The route's coroutine, with a request whose client we control."""
-        request = Request(
-            {
-                "type": "http",
-                "method": "POST",
-                "path": "/api/generate-paper",
-                "headers": [],
-            },
-            receive=receive,
-        )
-        return main.generate_paper(
-            GeneratePaperRequest(**PAPER_BODY), request, reservation=reservation
-        )
-
-    @staticmethod
-    async def still_connected():
-        """A client that is there but has nothing more to say."""
-        await asyncio.sleep(3600)
-        raise AssertionError("unreachable")  # pragma: no cover
-
-    @staticmethod
-    async def gone():
-        return {"type": "http.disconnect"}
+    """A paper nobody receives must not be charged for."""
 
     def test_a_disconnected_client_is_not_charged(self) -> None:
         """Uvicorn finishes the paper and bins the response; refund it."""
@@ -542,6 +556,160 @@ class TestGeneratePaperLimits(LimitsTestCase):
         )
         self.assertNotIn(response.status_code, (402, 429))
         self.assertEqual(self.counters(user), (1, 1, TODAY))
+
+
+class TestAttemptCap(LimitsTestCase):
+    """The abuse ceiling: 20 attempts a day, on every plan, never refunded.
+
+    `day_generations` cannot bound work done, because a generation that fails
+    or whose client disappears is refunded — so generate → disconnect → repeat
+    costs nothing and can run forever. `day_attempts` is the counter that is
+    spent before any work starts and never given back.
+    """
+
+    def loop(self, user: User, times: int) -> None:
+        """Generate-then-abandon, the way a looping script would."""
+        for _ in range(times):
+            self.reserve(user).refund()
+
+    def assert_too_many(self, user: User) -> None:
+        with self.assertRaises(HTTPException) as caught:
+            self.reserve(user)
+        self.assertEqual(caught.exception.status_code, 429)
+        self.assertEqual(caught.exception.detail, {"code": "too_many_attempts"})
+
+    def test_a_free_user_is_capped_on_the_twenty_first_attempt(self) -> None:
+        """Twenty refunded generations still spend twenty attempts."""
+        user = self.given_user()
+        self.loop(user, 20)
+        self.assertEqual(self.attempts(user), (20, TODAY))
+        self.assertEqual(
+            self.counters(user)[0], 0, "every generation was refunded"
+        )
+
+        self.assert_too_many(user)
+        self.assertEqual(self.counters(user)[0], 0)
+
+    def test_a_monthly_user_is_capped_on_the_twenty_first_attempt(self) -> None:
+        """The ceiling applies to a paying account too — it is not an allowance.
+
+        A subscriber's fair-use cap of ten would normally bite first; looping
+        with refunds keeps `day_generations` at zero, so the attempt cap is
+        what stops it, and it answers `too_many_attempts` rather than
+        `daily_limit_reached`.
+        """
+        user = self.given_user(
+            clerk_user_id="user_cap_monthly",
+            email="capm@example.com",
+            plan=PLAN_MONTHLY,
+        )
+        self.loop(user, 20)
+        self.assertEqual(self.attempts(user), (20, TODAY))
+        self.assertEqual(self.counters(user)[:2], (0, 0))
+
+        self.assert_too_many(user)
+
+    def test_a_disconnected_generation_still_counts_as_an_attempt(self) -> None:
+        """The hole this cap closes: the paper is refunded, the attempt is not."""
+        user = self.given_user()
+        reservation = self.reserve(user)
+
+        asyncio.run(self.endpoint(reservation, self.gone))
+
+        self.assertTrue(reservation.refunded)
+        self.assertEqual(
+            self.counters(user)[:2], (0, 0), "a paper nobody got is not charged"
+        )
+        self.assertEqual(
+            self.attempts(user), (1, TODAY), "but the work was still asked for"
+        )
+
+    def test_refund_does_not_return_the_attempt(self) -> None:
+        user = self.given_user()
+        self.reserve(user).refund()
+        self.assertEqual(self.attempts(user), (1, TODAY))
+
+    def test_the_next_london_day_resets_the_count(self) -> None:
+        user = self.given_user(day_attempts=20, attempt_date=TODAY)
+        self.assert_too_many(user)
+
+        self.today = TOMORROW
+        reservation = self.reserve(user)
+        self.assertEqual(reservation.day_attempts, 1)
+        self.assertEqual(self.attempts(user), (1, TOMORROW))
+
+    def test_a_stale_attempt_date_is_rebased_not_added_to(self) -> None:
+        """Yesterday's twenty do not count against today."""
+        user = self.given_user(
+            day_attempts=20, attempt_date=TODAY - timedelta(days=1)
+        )
+        self.assertEqual(self.reserve(user).day_attempts, 1)
+        self.assertEqual(self.attempts(user), (1, TODAY))
+
+    def test_the_cap_outranks_the_free_limit(self) -> None:
+        """A looping free user is told to stop, not told to pay."""
+        user = self.given_user(
+            total_generations=1, day_attempts=20, attempt_date=TODAY
+        )
+        self.assert_too_many(user)
+
+    def test_a_refused_generation_still_spends_an_attempt(self) -> None:
+        """402 is an attempt: asking for a paper you cannot have is still asking."""
+        user = self.given_user(total_generations=1)  # free, and already spent
+        with self.assertRaises(HTTPException) as caught:
+            self.reserve(user)
+        self.assertEqual(caught.exception.status_code, 402)
+        self.assertEqual(self.attempts(user), (1, TODAY))
+
+    def test_an_attempt_over_the_cap_adds_nothing(self) -> None:
+        """The one refusal that costs nothing, so a loop cannot top itself up."""
+        user = self.given_user(day_attempts=20, attempt_date=TODAY)
+        for _ in range(3):
+            self.assert_too_many(user)
+        self.assertEqual(self.attempts(user), (20, TODAY))
+
+    def test_the_cap_follows_the_environment(self) -> None:
+        os.environ["MAX_DAILY_ATTEMPTS"] = "2"
+        get_settings.cache_clear()
+        user = self.given_user()
+        self.loop(user, 2)
+        self.assert_too_many(user)
+
+    def test_over_http_the_body_is_too_many_attempts(self) -> None:
+        """What the frontend keys off: a 429 with its own code, and no upsell."""
+        user = self.given_user(day_attempts=20, attempt_date=TODAY)
+        response = self.client.post(
+            "/api/generate-paper",
+            json=PAPER_BODY,
+            headers=auth_header(self.token_for(user)),
+        )
+        self.assertEqual(response.status_code, 429)
+        self.assertEqual(response.json(), {"detail": {"code": "too_many_attempts"}})
+        self.assertEqual(self.counters(user)[0], 0)
+
+    def test_concurrent_attempts_do_not_overshoot_the_cap(self) -> None:
+        """The attempt counter is as race-proof as the generation counter."""
+        user = self.given_user(
+            clerk_user_id="user_cap_race",
+            email="capr@example.com",
+            plan=PLAN_MONTHLY,
+            day_attempts=18,
+            attempt_date=TODAY,
+        )
+
+        def attempt(_: int) -> bool:
+            try:
+                self.reserve(user)
+                return True
+            except HTTPException as exc:
+                self.assertEqual(exc.detail, {"code": "too_many_attempts"})
+                return False
+
+        with ThreadPoolExecutor(max_workers=6) as pool:
+            results = list(pool.map(attempt, range(6)))
+
+        self.assertEqual(results.count(True), 2, f"expected two to fit: {results}")
+        self.assertEqual(self.attempts(user), (20, TODAY))
 
 
 if __name__ == "__main__":  # pragma: no cover

@@ -56,6 +56,14 @@ class User(Base):
     )
     #: Europe/London calendar date that `day_generations` counts.
     day_date: Mapped[date | None] = mapped_column(Date, nullable=True)
+    #: Generation attempts today, successful or not. Counted separately from
+    #: `day_generations` because an attempt is never refunded: a refund gives
+    #: back the paper, not the right to ask for another one.
+    day_attempts: Mapped[int] = mapped_column(
+        Integer, nullable=False, server_default="0"
+    )
+    #: Europe/London calendar date that `day_attempts` counts.
+    attempt_date: Mapped[date | None] = mapped_column(Date, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )

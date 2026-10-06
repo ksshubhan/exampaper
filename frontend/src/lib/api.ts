@@ -24,8 +24,8 @@ const JSON_HEADERS = { 'Content-Type': 'application/json' }
  * A non-2xx answer from /api, carrying the backend's own error code.
  *
  * The code, not the status, is what the UI switches on: `upgrade_required`
- * opens the upgrade popup, `daily_limit_reached` and `billing_unavailable`
- * become their own fixed sentences. `message` stays human-readable so an
+ * opens the upgrade popup, `daily_limit_reached`, `too_many_attempts` and
+ * `billing_unavailable` become their own fixed sentences. `message` stays human-readable so an
  * unrecognised failure can still be shown as-is.
  */
 export class ApiError extends Error {

@@ -21,6 +21,9 @@ load_dotenv(Path(__file__).resolve().parent.parent / ".env")
 DEFAULT_FRONTEND_URL = "http://localhost:5173"
 DEFAULT_FREE_GENERATION_LIMIT = 1
 DEFAULT_DAILY_GENERATION_LIMIT = 10
+#: An abuse ceiling, not an allowance: it sits above the monthly plan's
+#: fair-use cap of 10 so a paying customer never meets it in normal use.
+DEFAULT_MAX_DAILY_ATTEMPTS = 20
 
 
 def _csv_env(name: str) -> tuple[str, ...]:
@@ -62,6 +65,10 @@ class Settings:
     stripe_price_monthly: str | None
     free_generation_limit: int
     daily_generation_limit: int
+    #: Generation *attempts* allowed per Europe/London day, on every plan.
+    #: Counted whether or not the attempt produced a paper, and never
+    #: refunded — otherwise a loop of generate-then-disconnect is free.
+    max_daily_attempts: int
 
 
 @lru_cache
@@ -82,5 +89,8 @@ def get_settings() -> Settings:
         ),
         daily_generation_limit=_int_env(
             "DAILY_GENERATION_LIMIT", DEFAULT_DAILY_GENERATION_LIMIT
+        ),
+        max_daily_attempts=_int_env(
+            "MAX_DAILY_ATTEMPTS", DEFAULT_MAX_DAILY_ATTEMPTS
         ),
     )

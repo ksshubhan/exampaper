@@ -24,6 +24,15 @@ export const PRICE_MONTHLY_PERIOD = 'per month'
 export const DAILY_LIMIT_MESSAGE =
   "You've reached today's limit. It resets at midnight."
 
+/**
+ * Error codes that mean "come back tomorrow", both answered with
+ * DAILY_LIMIT_MESSAGE: the fair-use cap, and the abuse ceiling on attempts
+ * (`too_many_attempts`, 429). Both reset at Europe/London midnight, and
+ * neither opens the upgrade popup — an upsell is the wrong answer to
+ * suspected abuse, and the sentence is all a real parent needs either way.
+ */
+const DAILY_LIMIT_CODES = ['daily_limit_reached', 'too_many_attempts']
+
 /** 503 `billing_unavailable` — Stripe is unreachable or misconfigured. */
 export const BILLING_UNAVAILABLE_MESSAGE =
   "Payment isn't available right now. Please try again shortly."
@@ -43,7 +52,7 @@ export function generationErrorMessage(
   error: unknown,
   fallback = 'Something went wrong.',
 ): string {
-  if (error instanceof ApiError && error.code === 'daily_limit_reached') {
+  if (error instanceof ApiError && DAILY_LIMIT_CODES.includes(error.code ?? '')) {
     return DAILY_LIMIT_MESSAGE
   }
   return error instanceof Error ? error.message : fallback
