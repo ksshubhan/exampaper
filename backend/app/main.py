@@ -8,7 +8,7 @@ say, which never passes through Vite at all.
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, FastAPI, Request, Response
+from fastapi import APIRouter, Depends, FastAPI, HTTPException, Request, Response, status
 from fastapi.concurrency import run_in_threadpool
 from fastapi.exception_handlers import request_validation_exception_handler
 from fastapi.exceptions import RequestValidationError
@@ -20,12 +20,30 @@ from .auth import get_current_user
 from .billing import router as billing_router
 from .config import get_settings
 from .generators.registry import topics_catalog
-from .limits import Reservation, pending_reservation, reserve_generation
+from .limits import (
+    Reservation,
+    count_render,
+    pending_reservation,
+    reserve_generation,
+)
 from .models import User
-from .pdf import render_pdf
+from .pdf import RenderTimeout, render_pdf
+from .render_guard import MAX_RENDER_BODY_BYTES, TOO_LARGE_DETAIL, RenderBodyLimit
 from .schema import GeneratePaperRequest, Paper
 
 app = FastAPI(title="ExamPaper API", version="0.0.1")
+
+#: The route whose body is capped, spelled once. The middleware matches on the
+#: full path, so it has to be the prefixed one the server actually serves.
+RENDER_PATH = "/api/render-pdf"
+
+RENDER_TIMEOUT_DETAIL = {"code": "render_timeout"}
+
+# Outermost, so an oversized render body is refused on its headers — before
+# routing, before the JSON is decoded, before a session is looked up. Added
+# before CORS only in source order; middleware added later runs first, so CORS
+# still wraps this and a rejected request keeps its CORS headers.
+app.add_middleware(RenderBodyLimit, path=RENDER_PATH)
 
 # The Vite dev server proxies /api -> here, so same-origin in practice. CORS is
 # a safety net for direct calls; the allowed origin follows FRONTEND_URL.
@@ -127,7 +145,7 @@ class RenderPdfRequest(BaseModel):
     filename: str = "paper.pdf"
 
 
-@api.post("/render-pdf")
+@api.post("/render-pdf", dependencies=[Depends(count_render)])
 async def render_pdf_endpoint(
     req: RenderPdfRequest,
     user: User = Depends(get_current_user),
@@ -142,8 +160,33 @@ async def render_pdf_endpoint(
     account's email, read from the session and never from `req` — the body is
     attacker-controlled, so a caller must not be able to name someone else or
     leave the footer off.
+
+    Free is not unlimited, though: every call launches a Chromium, so
+    `count_render` spends one of the day's renders first — and keeps it,
+    because the launch is the cost whether or not a PDF comes out. The body
+    was size-checked before it was parsed (see `render_guard`), and the render
+    itself runs under a wall-clock budget; overrunning it is a 504, not a
+    worker pinned forever.
     """
-    pdf = await run_in_threadpool(render_pdf, req.html, req.css, email=user.email)
+    # A backstop, not the guard: the middleware already refused anything this
+    # large without parsing it, which is the check that protects memory. This
+    # one only covers the route being reached some other way — mounted without
+    # the middleware, or called directly — and answers with the same code.
+    if len(req.html) + len(req.css) > MAX_RENDER_BODY_BYTES:
+        raise HTTPException(
+            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+            detail=TOO_LARGE_DETAIL,
+        )
+
+    try:
+        pdf = await run_in_threadpool(
+            render_pdf, req.html, req.css, email=user.email
+        )
+    except RenderTimeout as exc:
+        raise HTTPException(
+            status_code=status.HTTP_504_GATEWAY_TIMEOUT,
+            detail=RENDER_TIMEOUT_DETAIL,
+        ) from exc
     return Response(
         content=pdf,
         media_type="application/pdf",

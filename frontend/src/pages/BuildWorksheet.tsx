@@ -17,7 +17,11 @@ import { PaperSheet } from '../components/PaperPreview'
 import WorksheetDocument from '../components/WorksheetDocument'
 import UpgradeModal from '../components/UpgradeModal'
 import { generateWorksheet, getTopics, renderPdf } from '../lib/api'
-import { generationErrorMessage, isUpgradeRequired } from '../lib/billing'
+import {
+  downloadErrorMessage,
+  generationErrorMessage,
+  isUpgradeRequired,
+} from '../lib/billing'
 import { PRESETS, isAvailable, type PresetId } from '../lib/topics'
 import type { TopicGroup, Worksheet } from '../lib/types'
 
@@ -234,7 +238,7 @@ export default function BuildWorksheet() {
       )
       saveBlob(await renderPdf(html, css, 'worksheet.pdf'), 'worksheet.pdf')
     } catch (e) {
-      setError(e instanceof Error ? e.message : 'Could not build the PDF.')
+      setError(downloadErrorMessage(e))
     } finally {
       setDownloading(false)
     }

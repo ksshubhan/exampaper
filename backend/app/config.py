@@ -24,6 +24,14 @@ DEFAULT_DAILY_GENERATION_LIMIT = 10
 #: An abuse ceiling, not an allowance: it sits above the monthly plan's
 #: fair-use cap of 10 so a paying customer never meets it in normal use.
 DEFAULT_MAX_DAILY_ATTEMPTS = 20
+#: The same idea for PDF rendering, which reserves no generation slot and so
+#: has no other ceiling. Far above a day of real re-downloading: a paper plus
+#: its mark scheme per generation, times the monthly cap of 10, is 20.
+DEFAULT_MAX_DAILY_RENDERS = 50
+#: Wall-clock budget for one render, start to finish. Chromium prints
+#: attacker-supplied HTML and CSS, so the only safe assumption is that a
+#: document can take forever.
+DEFAULT_RENDER_TIMEOUT_SECONDS = 20
 
 
 def _csv_env(name: str) -> tuple[str, ...]:
@@ -70,6 +78,12 @@ class Settings:
     #: refunded — otherwise a loop of generate-then-disconnect is free. A
     #: refused request reserves nothing, so it costs nothing.
     max_daily_attempts: int
+    #: PDF renders allowed per Europe/London day, on every plan. Rendering
+    #: takes no generation slot, so without this the most expensive endpoint
+    #: we have is the only uncapped one.
+    max_daily_renders: int
+    #: Seconds one render may take before it is killed and answered 504.
+    render_timeout_seconds: int
 
 
 @lru_cache
@@ -93,5 +107,11 @@ def get_settings() -> Settings:
         ),
         max_daily_attempts=_int_env(
             "MAX_DAILY_ATTEMPTS", DEFAULT_MAX_DAILY_ATTEMPTS
+        ),
+        max_daily_renders=_int_env(
+            "MAX_DAILY_RENDERS", DEFAULT_MAX_DAILY_RENDERS
+        ),
+        render_timeout_seconds=_int_env(
+            "RENDER_TIMEOUT_SECONDS", DEFAULT_RENDER_TIMEOUT_SECONDS
         ),
     )

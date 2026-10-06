@@ -21,7 +21,11 @@ import PaperPreview, {
 } from '../components/PaperPreview'
 import UpgradeModal from '../components/UpgradeModal'
 import { generatePaper, getMe, getTopics, renderPdf } from '../lib/api'
-import { generationErrorMessage, isUpgradeRequired } from '../lib/billing'
+import {
+  downloadErrorMessage,
+  generationErrorMessage,
+  isUpgradeRequired,
+} from '../lib/billing'
 import { PRESETS, isAvailable, type PresetId } from '../lib/topics'
 import type { Paper, TopicGroup } from '../lib/types'
 
@@ -266,7 +270,7 @@ export default function BuildPaper() {
         )
       }
     } catch (e) {
-      setError(e instanceof Error ? e.message : 'Could not build the PDF.')
+      setError(downloadErrorMessage(e))
     } finally {
       setDownloading(false)
     }

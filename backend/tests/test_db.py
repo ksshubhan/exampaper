@@ -151,6 +151,8 @@ class TestMigrationMatchesModels(unittest.TestCase):
                 "day_date",
                 "day_attempts",
                 "attempt_date",
+                "day_renders",
+                "render_date",
                 "created_at",
             ],
         )
@@ -161,6 +163,8 @@ class TestMigrationMatchesModels(unittest.TestCase):
 
     def test_downgrade_is_reversible(self) -> None:
         sql = _downgrade_sql()
+        self.assertIn("DROP COLUMN render_date", sql)
+        self.assertIn("DROP COLUMN day_renders", sql)
         self.assertIn("DROP COLUMN attempt_date", sql)
         self.assertIn("DROP COLUMN day_attempts", sql)
         self.assertIn("DROP TABLE users", sql)

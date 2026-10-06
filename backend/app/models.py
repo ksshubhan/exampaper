@@ -65,6 +65,15 @@ class User(Base):
     )
     #: Europe/London calendar date that `day_attempts` counts.
     attempt_date: Mapped[date | None] = mapped_column(Date, nullable=True)
+    #: PDFs rendered today. Like `day_attempts` it counts work done and is
+    #: never refunded — a render that fails still cost a Chromium launch.
+    #: Separate from the generation counters because rendering reserves no
+    #: slot: re-downloading a paper is free, but not unlimited.
+    day_renders: Mapped[int] = mapped_column(
+        Integer, nullable=False, server_default="0"
+    )
+    #: Europe/London calendar date that `day_renders` counts.
+    render_date: Mapped[date | None] = mapped_column(Date, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )

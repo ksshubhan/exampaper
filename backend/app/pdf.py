@@ -18,17 +18,34 @@ straight off the wire, so:
   arbitrary URLs from our server, and stops a hostile external reference hanging
   the `networkidle` wait below. Diagrams are inline SVG and the stylesheet
   arrives in the request body, so a correct render needs nothing from the net.
+
+Both of those bound what a document can *reach*. Nothing in Playwright bounds
+how long it can take: `page.pdf()` takes no timeout, and a document can wedge
+the renderer (a script that never returns, a layout that never settles) after
+`set_content` has already come back. So the render runs in a short-lived child
+process of its own, started in a new session, and a render that overruns its
+budget has that whole process group killed — Chromium, the Playwright driver
+and the Python that owns them. `render_pdf` is that wrapper;
+`render_document` is the render itself, and runs in the child.
 """
 
 from __future__ import annotations
 
 import datetime as dt
 import io
+import json
+import os
+import signal
+import subprocess
+import sys
 from html import escape
+from pathlib import Path
 from zoneinfo import ZoneInfo
 
 from playwright.sync_api import Route, sync_playwright
 from pypdf import PdfReader, PdfWriter
+
+from .config import get_settings
 
 # The calendar day the footer dates a paper by — the same clock the generation
 # limits run on, so "today" means one thing across the app.
@@ -111,12 +128,18 @@ def _pad_to_even(pdf_bytes: bytes) -> bytes:
     return out.getvalue()
 
 
-def render_pdf(html: str, css: str, *, email: str, on: dt.date | None = None) -> bytes:
+def render_document(
+    html: str, css: str, *, email: str, on: dt.date | None = None
+) -> bytes:
     """Render a self-contained HTML fragment + CSS to a clean, even-page A4 PDF.
 
     `email` is the authenticated account's address and goes into the footer of
     every page; it is a keyword argument so no call site can pass it by accident
     from somewhere untrusted. `on` defaults to today in Europe/London.
+
+    This runs in the render subprocess, with no time limit of its own: the
+    budget is enforced by `render_pdf`, which can kill it. Call that, not this
+    — the only in-process caller is `render_worker`.
     """
     document = (
         "<!doctype html><html><head><meta charset='utf-8'>"
@@ -153,4 +176,87 @@ def render_pdf(html: str, css: str, *, email: str, on: dt.date | None = None) ->
                 pdf = padded if _page_count(padded) % 2 == 0 else _pad_to_even(pdf)
         finally:
             browser.close()
+    return pdf
+
+
+class RenderError(RuntimeError):
+    """The render subprocess failed. The message is its stderr tail."""
+
+
+class RenderTimeout(RenderError):
+    """The render overran its budget and was killed. Answered 504."""
+
+
+#: The child entry point, resolved from this file so it does not depend on the
+#: working directory the server was started from.
+_WORKER = Path(__file__).resolve().with_name("render_worker.py")
+
+#: How much of the child's stderr to keep when it fails. Enough for a
+#: traceback, bounded so a Chromium log cannot fill ours.
+_STDERR_TAIL = 4000
+
+
+def _kill_tree(process: subprocess.Popen[bytes]) -> None:
+    """Kill the child *and* everything it started.
+
+    Chromium and the Playwright driver are children of the child, so killing
+    the child alone would leave them running — which is the leak this whole
+    mechanism exists to prevent. The child is started in its own session, so
+    one `killpg` takes the lot.
+    """
+    try:
+        if hasattr(os, "killpg"):
+            os.killpg(os.getpgid(process.pid), signal.SIGKILL)
+        else:  # pragma: no cover - POSIX only in practice
+            process.kill()
+    except (ProcessLookupError, PermissionError):  # pragma: no cover
+        # Already gone, or never got its own group. Either way nothing to kill.
+        process.kill()
+
+
+def render_pdf(
+    html: str,
+    css: str,
+    *,
+    email: str,
+    on: dt.date | None = None,
+    timeout: float | None = None,
+) -> bytes:
+    """Render to PDF in a child process, within a hard wall-clock budget.
+
+    Raises `RenderTimeout` if the budget runs out — the process group is killed
+    first, so no Chromium outlives the request — and `RenderError` if the child
+    fails for any other reason. `timeout` defaults to `RENDER_TIMEOUT_SECONDS`.
+
+    Blocking, like the render it wraps: call it through a threadpool.
+    """
+    budget = get_settings().render_timeout_seconds if timeout is None else timeout
+    payload = json.dumps(
+        {
+            "html": html,
+            "css": css,
+            "email": email,
+            "on": on.isoformat() if on else None,
+        }
+    ).encode()
+
+    process = subprocess.Popen(
+        [sys.executable, str(_WORKER)],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        # Its own process group, which is what makes the kill above complete.
+        start_new_session=True,
+    )
+    try:
+        pdf, stderr = process.communicate(payload, timeout=budget)
+    except subprocess.TimeoutExpired:
+        _kill_tree(process)
+        # Reap it, and drain the pipes the kill just closed, so neither a
+        # zombie nor a reader thread is left behind.
+        process.communicate()
+        raise RenderTimeout(f"render exceeded {budget}s") from None
+
+    if process.returncode != 0:
+        raise RenderError(stderr.decode("utf-8", "replace")[-_STDERR_TAIL:])
     return pdf

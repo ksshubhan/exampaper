@@ -366,24 +366,45 @@ the box down with a loop of large renders. Three limits, all on this endpoint.
 - **Max request body.** `html` + `css` over **2 MB** combined → **HTTP 413**
   `{"detail": {"code": "render_too_large"}}`, checked before the counter and
   before Chromium. A real paper's HTML is a few hundred KB; the field is
-  attacker-controlled and currently unbounded, so this is also what stops a
-  body big enough to exhaust memory during parse.
-- **Hard render timeout.** Wrap the whole `render_pdf` call — launch, both print
-  passes, close — in a **20 s** budget. On expiry, kill the browser and return
-  **HTTP 504** `{"detail": {"code": "render_timeout"}}`. CSS can loop or blow up
-  layout arbitrarily; without a wall clock a single request pins a worker
-  forever. The existing `browser.close()` in the `finally` must still run, so
-  the timeout has to fire somewhere that unwinds `render_pdf`, not around the
-  threadpool hop only.
+  attacker-controlled and currently unbounded. A check inside the handler runs
+  only after FastAPI has already read and parsed the whole JSON body, so it does
+  not protect memory on its own: also reject on the raw request before parsing
+  (`Content-Length` over the limit → 413, and a byte count on streamed/chunked
+  bodies that aborts past the limit), scoped to `/api/render-pdf`. The raw
+  check is ASGI middleware in front of routing, so it lands before the JSON is
+  decoded, before the account is looked up and before the counter; being
+  pre-parse it can only measure whole-body bytes, which is a superset of
+  `html` + `css` and so bounds both. The in-handler check stays as a backstop
+  for a route reached some other way, and returns the same 413.
+- **Hard render timeout.** A **20 s** wall-clock budget over the whole render —
+  launch, both print passes, close — from `RENDER_TIMEOUT_SECONDS` so a test
+  can shorten it. On expiry: kill it and answer **HTTP 504**
+  `{"detail": {"code": "render_timeout"}}`. CSS and scripts off the wire can
+  loop or blow up layout arbitrarily; without a wall clock a single request
+  pins a worker forever.
+
+  This cannot be enforced in-process. `page.pdf()` accepts no timeout at all,
+  and a document can wedge the renderer *after* `set_content` has returned — so
+  the thread doing the printing is exactly the thread that would have to notice,
+  and `browser.close()` in the `finally` never gets to run. The render therefore
+  goes in a short-lived child process started in its own session, and the
+  timeout kills that whole process group: Chromium, the Playwright driver, and
+  the Python holding them. `render_pdf` becomes that wrapper;
+  `render_document` is the render itself and runs in the child. A second
+  benefit falls out — a Chromium that crashes or exhausts memory takes a
+  throwaway process with it, not the API worker.
 
 Frontend: all three are plain inline messages on the download button, no upgrade
 popup — `too_many_renders` is suspected abuse and the other two are faults, and
 none of them is something a subscription fixes.
 
 Done when: the 51st render of a Europe/London day is 429 `too_many_renders`
-while generation still works; a 3 MB body is 413 without launching Chromium; a
-document whose CSS never settles returns 504 within ~20 s and leaves no
-Chromium process behind; and `day_renders` resets the next day.
+while generation still works; a 3 MB body is 413 without launching Chromium,
+and is refused **before the handler parses it** — proved with an oversized body
+that would also fail validation, so a 413 rather than a 422 is the only way to
+know the guard ran first; a document that wedges the renderer returns 504 inside
+its budget and leaves no Chromium process behind; and `day_renders` resets the
+next Europe/London day.
 
 ---
 

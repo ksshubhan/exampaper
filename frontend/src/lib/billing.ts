@@ -33,6 +33,21 @@ export const DAILY_LIMIT_MESSAGE =
  */
 const DAILY_LIMIT_CODES = ['daily_limit_reached', 'too_many_attempts']
 
+/**
+ * The three ways a download can be refused, and what each one says.
+ *
+ * None of them opens the upgrade popup. `too_many_renders` is the abuse
+ * ceiling on rendering — an upsell is the wrong answer to it, and a
+ * subscriber who meets it has nothing left to buy — while the other two are
+ * faults in one particular document, which no subscription would fix.
+ */
+export const DOWNLOAD_LIMIT_MESSAGE =
+  "You've reached today's download limit. It resets at midnight."
+export const DOWNLOAD_TOO_LARGE_MESSAGE =
+  'This paper is too big to turn into a PDF. Try generating a shorter one.'
+export const DOWNLOAD_TIMEOUT_MESSAGE =
+  'Building the PDF took too long. Please try the download again.'
+
 /** 503 `billing_unavailable` — Stripe is unreachable or misconfigured. */
 export const BILLING_UNAVAILABLE_MESSAGE =
   "Payment isn't available right now. Please try again shortly."
@@ -54,6 +69,30 @@ export function generationErrorMessage(
 ): string {
   if (error instanceof ApiError && DAILY_LIMIT_CODES.includes(error.code ?? '')) {
     return DAILY_LIMIT_MESSAGE
+  }
+  return error instanceof Error ? error.message : fallback
+}
+
+/**
+ * The inline message for a failed PDF download.
+ *
+ * Shown next to the download button. Anything unrecognised falls through to
+ * the error's own text, so a new backend code is still legible before this
+ * list learns about it.
+ */
+export function downloadErrorMessage(
+  error: unknown,
+  fallback = 'Could not build the PDF.',
+): string {
+  if (error instanceof ApiError) {
+    switch (error.code) {
+      case 'too_many_renders':
+        return DOWNLOAD_LIMIT_MESSAGE
+      case 'render_too_large':
+        return DOWNLOAD_TOO_LARGE_MESSAGE
+      case 'render_timeout':
+        return DOWNLOAD_TIMEOUT_MESSAGE
+    }
   }
   return error instanceof Error ? error.message : fallback
 }

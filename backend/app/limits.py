@@ -25,6 +25,12 @@ Two counters, counting different things:
   went on to do work — spends one: a refusal (402, 429) starts no generation
   and costs nothing, which also means a free user who has run out cannot be
   locked out of the day they upgrade.
+* `day_renders` — PDFs *rendered*, on every plan. Also never refunded.
+  Rendering reserves no generation slot, because re-downloading a paper you
+  already own has to stay free; that leaves one headless Chromium per call
+  with nothing bounding it at all. This counter is that bound, and it is
+  separate from the other two so a day of legitimate re-downloading cannot
+  eat into the allowance for making papers.
 """
 
 from __future__ import annotations
@@ -51,6 +57,7 @@ LONDON = ZoneInfo("Europe/London")
 UPGRADE_REQUIRED_DETAIL = {"code": "upgrade_required"}
 DAILY_LIMIT_REACHED_DETAIL = {"code": "daily_limit_reached"}
 TOO_MANY_ATTEMPTS_DETAIL = {"code": "too_many_attempts"}
+TOO_MANY_RENDERS_DETAIL = {"code": "too_many_renders"}
 
 #: Where the live reservation is parked on `request.state`, so a request that
 #: dies before the route body runs can still give the slot back. See the
@@ -151,6 +158,32 @@ _REFUND_SQL = text(
 )
 
 
+# Renders are counted the same way and with the same `FOR UPDATE` lock, minus
+# every branch: there is no plan to consult (the cap is identical on all of
+# them) and no refund path, so one flag is not needed — either the row comes
+# back incremented or the cap is already met and the `WHERE` matches nothing.
+_COUNT_RENDER_SQL = text(
+    """
+    WITH before AS (
+        SELECT
+            id,
+            CASE WHEN render_date = :today THEN day_renders ELSE 0 END
+                AS render_count
+        FROM users
+        WHERE id = :user_id
+        FOR UPDATE
+    )
+    UPDATE users SET
+        day_renders = before.render_count + 1,
+        render_date = :today
+    FROM before
+    WHERE users.id = before.id
+      AND before.render_count < :max_renders
+    RETURNING users.day_renders
+    """
+)
+
+
 @dataclass
 class Reservation:
     """A consumed generation slot.
@@ -200,6 +233,19 @@ def too_many_attempts() -> HTTPException:
     return HTTPException(
         status_code=status.HTTP_429_TOO_MANY_REQUESTS,
         detail=TOO_MANY_ATTEMPTS_DETAIL,
+    )
+
+
+def too_many_renders() -> HTTPException:
+    """The refusal for the render ceiling. Same for every plan.
+
+    No upsell, for the same reason as `too_many_attempts`: a subscriber who
+    has rendered 50 PDFs today has nothing left to buy, and a free user is not
+    going to be sold a subscription by a wall.
+    """
+    return HTTPException(
+        status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+        detail=TOO_MANY_RENDERS_DETAIL,
     )
 
 
@@ -279,3 +325,38 @@ def reserve_generation(
     )
     setattr(request.state, STATE_ATTR, reservation)
     return reservation
+
+
+def count_render(
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> int:
+    """FastAPI dependency: spend one render, or refuse the request.
+
+    Returns the number of renders spent today, this one included. Nothing to
+    hand back, so unlike `reserve_generation` there is no object to hold: the
+    count is taken before Chromium starts and a failed render keeps it, because
+    launching the browser is where the cost is.
+    """
+    settings = get_settings()
+    today = london_today()
+    row = db.execute(
+        _COUNT_RENDER_SQL,
+        {
+            "today": today,
+            "user_id": user.id,
+            "max_renders": settings.max_daily_renders,
+        },
+    ).one_or_none()
+
+    if row is None:
+        # The only `WHERE` that can fail — `get_current_user` just loaded the
+        # row. Nothing is written when the cap is met, or a looping client
+        # would keep topping its own counter up past the ceiling.
+        db.rollback()
+        raise too_many_renders()
+
+    db.commit()
+    # The ORM row's counters are stale now; the next read goes to the database.
+    db.expire(user)
+    return row.day_renders
