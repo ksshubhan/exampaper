@@ -1,0 +1,23 @@
+# Keep the build context small, and keep things that must never ship out of
+# the image. Mirrors .gitignore where they overlap, but this file stands on
+# its own: an untracked file is still part of the build context.
+
+.git
+.venv
+.venv-dev
+**/node_modules
+# Built in the image's frontend stage; a stale local build must not win.
+frontend/dist
+**/__pycache__
+
+# Real secrets live in Railway service variables, never in the image.
+**/.env
+**/.env.*
+!**/.env.example
+
+# Exam board source material — copyright, do not distribute.
+resources/
+
+probe.py
+.claude/
+.DS_Store
