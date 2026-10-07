@@ -8,6 +8,7 @@ import ClerkTokenBridge from './components/ClerkTokenBridge.tsx'
 import Home from './pages/Home.tsx'
 import About from './pages/About.tsx'
 import Pricing from './pages/Pricing.tsx'
+import Privacy from './pages/Privacy.tsx'
 import Account from './pages/Account.tsx'
 import BoardGrid from './pages/BoardGrid.tsx'
 import SubjectGrid from './pages/SubjectGrid.tsx'
@@ -26,6 +27,7 @@ const router = createBrowserRouter([
     children: [
       { index: true, element: <Home /> },
       { path: 'about', element: <About /> },
+      { path: 'privacy', element: <Privacy /> },
       { path: 'pricing', element: <Pricing /> },
       // Where Stripe sends a payer back, as /account?upgraded=1.
       { path: 'account', element: <Account /> },
