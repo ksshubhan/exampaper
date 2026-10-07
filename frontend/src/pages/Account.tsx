@@ -19,6 +19,19 @@ import type { Me } from '../lib/types'
 const POLL_INTERVAL_MS = 2000
 const CONFIRM_ATTEMPTS = 10 // 10 x 2s = the 20s window
 
+/** `7 November 2026` — UK reader, UK billing day. Null if unparseable. */
+function formatCancelDate(iso: string | null): string | null {
+  if (!iso) return null
+  const when = new Date(iso)
+  if (Number.isNaN(when.getTime())) return null
+  return when.toLocaleDateString('en-GB', {
+    day: 'numeric',
+    month: 'long',
+    year: 'numeric',
+    timeZone: 'Europe/London',
+  })
+}
+
 export default function Account() {
   const { isLoaded, isSignedIn } = useAuth()
   const { signOut } = useClerk()
@@ -85,6 +98,13 @@ export default function Account() {
   if (!isSignedIn) return <RedirectToSignIn />
 
   const monthly = me?.plan === 'monthly'
+  // A cancel date only means anything on a subscription that is still running.
+  const cancelsOn = monthly ? formatCancelDate(me?.cancel_at ?? null) : null
+  // The free allowance is a one-time trial, so it is spent for good (see
+  // `_SLOT_AVAILABLE` in limits.py). `total_generations` keeps counting after
+  // that, which is why a used-up allowance shows no count at all.
+  const freeAllowanceUsed =
+    !monthly && me !== null && me.total_generations >= me.free_limit
 
   return (
     <Shell>
@@ -106,19 +126,33 @@ export default function Account() {
               className={
                 'rounded-full px-2.5 py-1 text-xs font-medium ' +
                 (monthly
-                  ? 'bg-green-100 text-green-800'
+                  ? cancelsOn
+                    ? 'bg-amber-100 text-amber-800'
+                    : 'bg-green-100 text-green-800'
                   : 'border border-[var(--border)] text-[var(--muted)]')
               }
             >
-              {monthly ? 'Active' : 'No subscription'}
+              {monthly
+                ? cancelsOn
+                  ? 'Cancelling'
+                  : 'Active'
+                : 'No subscription'}
             </span>
           </div>
 
           <p className="mt-3 text-sm text-[var(--muted)]">
             {monthly
               ? `Papers today: ${me.day_generations} of ${me.daily_limit}`
-              : `Free papers: ${me.total_generations} of ${me.free_limit}`}
+              : freeAllowanceUsed
+                ? `You've used your free ${me.free_limit > 1 ? 'papers' : 'paper'}.`
+                : `Free papers: ${me.total_generations} of ${me.free_limit}`}
           </p>
+
+          {cancelsOn && (
+            <p className="mt-1 text-sm text-[var(--muted)]">
+              Cancels on {cancelsOn}
+            </p>
+          )}
 
           <div className="mt-5">
             {monthly ? (

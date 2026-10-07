@@ -155,4 +155,6 @@ export interface Me {
   day_generations: number
   free_limit: number
   daily_limit: number
+  /** When a cancelled-but-paid-up subscription stops, else null. */
+  cancel_at: string | null
 }

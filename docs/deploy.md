@@ -269,8 +269,8 @@ a sign-in from a Google account you have never used here works.
 
 ## Section 6 — Stripe live mode (me) — gated
 
-**Do not start until** the `## Before launch` item in `docs/later.md`
-(end-of-period cancellation + `Cancels on {date}` on `/account`) is built.
+**Do not start until** `docs/before-launch.md` Sections 4–5
+(end-of-period cancellation + `Cancels on {date}` on `/account`) are built.
 Live customers must keep what they paid for until the period ends.
 
 1. Activate the Stripe account (business details, bank account).
