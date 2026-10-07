@@ -8,11 +8,14 @@ say, which never passes through Vite at all.
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from fastapi import APIRouter, Depends, FastAPI, HTTPException, Request, Response, status
 from fastapi.concurrency import run_in_threadpool
 from fastapi.exception_handlers import request_validation_exception_handler
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
 from .assembler import build_paper
@@ -218,3 +221,98 @@ async def render_pdf_endpoint(
 api.include_router(billing_router)
 
 app.include_router(api)
+
+
+# --- the built frontend ----------------------------------------------------- #
+#
+# In production one process serves both the SPA and the API, so there is one
+# origin and the frontend's relative `/api/...` calls need no base URL. In
+# development there is no build to serve: `npm run dev` on 5173 proxies `/api`
+# here, and nothing below is mounted.
+
+#: Where `npm run build` puts the bundle, resolved from this package rather
+#: than the cwd — the container's working directory is `/app/backend`, and a
+#: dev shell could be anywhere.
+FRONTEND_DIST = Path(__file__).resolve().parents[2] / "frontend" / "dist"
+
+#: Hashed filenames, so the bytes behind one can never change: cache forever.
+IMMUTABLE = "public, max-age=31536000, immutable"
+
+#: `index.html` is *not* hashed, so it must be revalidated every load —
+#: otherwise a redeploy's new asset hashes are never asked for.
+NO_CACHE = "no-cache"
+
+#: Spelled out because Starlette gives a GET-only route a 405 on every other
+#: verb. `OPTIONS` is listed for completeness; CORS answers preflights before
+#: routing ever gets here.
+SPA_METHODS = ["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"]
+
+
+def _inside(dist: Path, relative: str) -> Path | None:
+    """`relative` resolved under `dist`, or None if it escapes.
+
+    The path arrives from the URL, already percent-decoded by Starlette, so
+    `..`, `%2e%2e%2f` and an absolute `/etc/passwd` all reach here as ordinary
+    path text. Resolving first and then checking containment covers all three
+    at once, symlinks included — string-matching for `..` would not.
+    """
+    candidate = (dist / relative).resolve()
+    if candidate != dist and dist not in candidate.parents:
+        return None
+    return candidate
+
+
+def mount_frontend(target: FastAPI, dist: Path) -> bool:
+    """Serve the SPA in `dist` from `target`, if that build exists.
+
+    Returns whether anything was mounted, and must be called *after* the API
+    router: the catch-all below would otherwise shadow every real route.
+    """
+    if not dist.is_dir():
+        return False
+    dist = dist.resolve()
+    index = dist / "index.html"
+
+    # Every method, not just GET: a catch-all that matched the path but not
+    # the method would turn each unknown-path 404 into a 405 — Starlette
+    # answers a path-only match that way — so `POST /api/mistyped` would stop
+    # reporting that the endpoint does not exist. Anything but a read is 404ed
+    # below instead.
+    @target.api_route("/{spa_path:path}", methods=SPA_METHODS, include_in_schema=False)
+    def spa(spa_path: str, request: Request) -> Response:
+        # `/api` is the API's, always. Falling through to `index.html` would
+        # answer a mistyped endpoint with 200 and a page of HTML, which is far
+        # harder to debug than a 404 — and would hand a fetch() parse error
+        # instead of the JSON the frontend knows how to read.
+        if spa_path == "api" or spa_path.startswith("api/"):
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
+
+        # There is nothing here to write to, and no route that accepts one:
+        # a non-read on an unmatched path is a path that does not exist.
+        if request.method not in ("GET", "HEAD"):
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
+
+        resolved = _inside(dist, spa_path) if spa_path else None
+
+        # Hashed bundle: cacheable forever, and a miss is a 404 rather than
+        # the index, because a build never asks for an asset that isn't there.
+        if spa_path.startswith("assets/"):
+            if resolved is None or not resolved.is_file():
+                raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
+            return FileResponse(resolved, headers={"Cache-Control": IMMUTABLE})
+
+        # Anything else that names a real file — favicon, robots.txt, whatever
+        # was dropped in `frontend/public`.
+        if resolved is not None and resolved.is_file():
+            return FileResponse(resolved, headers={"Cache-Control": NO_CACHE})
+
+        # Every other GET is a client-side route: `/`, `/account`, a deep
+        # practice URL, or a typo. React Router decides which.
+        if not index.is_file():
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
+        return FileResponse(index, headers={"Cache-Control": NO_CACHE})
+
+    return True
+
+
+mount_frontend(app, FRONTEND_DIST)
