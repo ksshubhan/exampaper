@@ -69,7 +69,7 @@ pytest tests -q
 
 ## Status
 
-Live at https://exampaper-production.up.railway.app
+Live at https://exampaper.sshubhan.com
 
 Working: topic selection, paper generation with verified answers, mark scheme, PDF export.
 
