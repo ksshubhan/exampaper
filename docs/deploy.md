@@ -34,6 +34,12 @@ gets done. Every checklist item maps to a section here (table at the end).
   3. Section 6 — **Stripe live mode**. Gated; see that section.
 - **Migrations run as Railway's pre-deploy command** (`alembic upgrade head`),
   so a failed migration stops the deploy and the previous one keeps serving.
+- **No config file in the repo.** Railway has deprecated config files, and
+  `railway.toml` is ignored for this service, so the pre-deploy command and the
+  healthcheck are **set in the Railway UI** — dashboard state, not code. They
+  are recorded in Section 3 (set) and Section 4 (confirmed in the deploy log).
+  The one thing this costs: those two settings are not in version control, so
+  recreating the service means setting them again from Section 3.
 
 ## Fences (all sections)
 
@@ -43,8 +49,8 @@ gets done. Every checklist item maps to a section here (table at the end).
   diagram code, auth, billing, limits, or the render pipeline. The only
   `backend/app` change in this spec is the static-file serving in Section 1
   (plus the one conditional line in Section 4, only if its trigger happens).
-- No secrets in code, in the Dockerfile, or in `railway.toml`. Everything comes
-  from Railway service variables.
+- No secrets in code or in the Dockerfile. Everything comes from Railway
+  service variables.
 - No new paid services beyond Railway (Hobby) and Neon (free).
 - **No `ANTHROPIC_API_KEY` anywhere in the deploy.** Nothing deployed calls a model.
 - `resources/` (copyrighted exam material) must never enter the image:
@@ -95,10 +101,11 @@ directory, `/` is a 404 (nothing mounted).
 
 ---
 
-## Section 2 — Container and Railway config
+## Section 2 — The container image
 
 Goal: one image that builds the frontend, installs the backend and Chromium,
-and runs one worker.
+and runs one worker. Railway's own deploy settings are not here — they are
+dashboard work in Section 3.
 
 - **`Dockerfile`** at the repo root, two stages:
   - **Build stage**, `node:22-slim`: `ARG VITE_CLERK_PUBLISHABLE_KEY`, copy
@@ -120,14 +127,18 @@ and runs one worker.
 - **`.dockerignore`**: `.git`, `.venv`, `.venv-dev`, `**/node_modules`,
   `frontend/dist`, `**/__pycache__`, `**/.env`, `**/.env.*` (keep
   `!**/.env.example`), `resources/`, `probe.py`, `.claude/`, `.DS_Store`.
-- **`railway.toml`** at the repo root:
-  - `[build]` `builder = "DOCKERFILE"`, `dockerfilePath = "Dockerfile"`.
-  - `[deploy]` `preDeployCommand = ["alembic upgrade head"]`,
-    `healthcheckPath = "/api/health"`, `healthcheckTimeout = 120`,
-    `restartPolicyType = "ON_FAILURE"`. No replica or multi-region config:
-    one replica is the default and the only correct number.
-  - A comment above `[deploy]` saying why one replica and one worker (the
-    render limits are process-local), pointing at the deploy checklist.
+- **No `railway.toml`.** Railway has deprecated config files and ignores one
+  for this service. The pre-deploy command and the healthcheck are set in the
+  UI instead — Section 3, step 4. A Dockerfile at the repo root is detected
+  without any config, so nothing is lost on the build side.
+  - Because that file is where a comment about it would have gone: one replica
+    and one worker is not a default to leave alone but a correctness
+    requirement — the concurrent-render limit is in-process state in
+    `app/render_slots.py`, so a second worker or replica hands out the same
+    slots twice. The `--workers 1` in the `CMD` is half of it; one replica (the
+    Railway default, left alone) is the other. Scaling out needs that state in
+    Postgres first — see the deploy checklist in
+    `docs/accounts-and-payments.md`.
 
 Done when, **if Docker is installed locally**:
 ```
@@ -139,8 +150,9 @@ docker run --rm -p 8000:8000 --env-file backend/.env \
 then at `http://localhost:8000`: sign in, generate a paper, download the PDF,
 open it, watermark present. Also `docker run --rm exampaper ls /app` shows only
 `backend` and `frontend`, and the image contains no `resources`.
-**If Docker is not installed**: done when the files exist and `pytest` still
-passes; the Railway build in Section 4 is the build check.
+**If Docker is not installed**: done when the two files (`Dockerfile`,
+`.dockerignore`) exist and `pytest` still passes; the Railway build in
+Section 4 is the build check.
 
 ---
 
@@ -157,9 +169,22 @@ passes; the Railway build in Section 4 is the build check.
    service settings: region **EU West**, serverless/app sleeping **off**
    (Chromium cold starts are slow, and webhooks must land). Networking →
    **Generate Domain** → note the `*.up.railway.app` URL.
+4. **Deploy settings, in the UI** (service → Settings → Deploy). These replace
+   the deprecated `railway.toml`, so they exist only here:
+   - **Pre-deploy command**: `alembic upgrade head`. This is what makes a
+     failed migration stop the deploy while the previous image keeps serving.
+     It runs with the image's working directory (`/app/backend`), where
+     `alembic.ini` sits, so the bare command is correct.
+   - **Healthcheck path**: `/api/health`, timeout **120** seconds. The timeout
+     is generous on purpose: a cold start installs nothing but does import the
+     app and open a connection to a Neon instance that may have scaled to zero.
+   - **Restart policy**: on failure (Railway's default — nothing to change).
+   - Leave replicas at **1**. See Section 2 for why that is a requirement and
+     not a default worth revisiting.
 
-Done when: the Railway service exists in EU West with a generated domain, and
-Neon shows an empty database in London.
+Done when: the Railway service exists in EU West with a generated domain; its
+Deploy settings show the pre-deploy command and the `/api/health` healthcheck;
+and Neon shows an empty database in London.
 
 ---
 
@@ -186,7 +211,9 @@ Neon shows an empty database in London.
    - Not set: `ANTHROPIC_API_KEY`, `TEST_DATABASE_URL`.
 3. Deploy. The deploy log shows `alembic upgrade head` applying
    `0001_initial`, `0002_attempt_cap` and `0003_render_cap`, then a passing
-   healthcheck.
+   healthcheck. Both come from the UI settings in Section 3, step 4 — there is
+   no config file to fall back on, so if the log shows no migration step or no
+   healthcheck, the setting did not save rather than the deploy being fine.
 4. **Stripe Customer Portal (test mode)**: add the Railway domain wherever the
    portal settings ask for your site/return URLs.
 
@@ -268,8 +295,8 @@ date → refund yourself in the Stripe dashboard.
 |---|---|
 | One uvicorn worker | Section 2 (`--workers 1`, one replica) |
 | `MAX_CONCURRENT_RENDERS` from memory | Section 4 (set explicitly, checked in metrics) |
-| Migrate the production database | Section 2 (pre-deploy command), Section 4 (log check) |
-| Pin one Python version | Section 2 (`python:3.14-slim`) |
+| Migrate the production database | Section 3 (pre-deploy command, in the UI), Section 4 (log check) |
+| Pin one Python version | Section 2 (`python:3.14-slim-trixie`) |
 | No `ANTHROPIC_API_KEY` | Fences, Section 4 |
 | Live Stripe keys + production webhook | Section 6 |
 | Clerk production instance | Section 5 |
