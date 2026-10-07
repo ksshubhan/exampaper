@@ -31,23 +31,6 @@ are *not* here, because those must ship before the site is public.
   it is worth doing in that pass; it surfaces the moment anyone cancels, which
   is Section 6's own done-when.
 
-## Housekeeping
-
-Chores, not decisions. None of them block launch; all of them are things a
-reader of this repo would otherwise trip over.
-
-- **Python dependencies are unpinned; consider a lock file.**
-  `backend/requirements.txt` is all floors (`fastapi>=0.115`, `sympy>=1.13`,
-  `playwright>=1.40`, …), so the image resolves whatever is newest at build
-  time and two builds of the same commit can differ — the one thing the
-  Dockerfile's pinned Python version and Debian release were meant to prevent.
-  It also means a breaking release of any dependency reaches production without
-  a commit. SymPy and Playwright are the sharp ends: verification correctness
-  and a browser binary whose install flags have changed before. Options are a
-  `pip-compile`/`uv` lock file committed alongside the current loose file, or
-  pinning in place; either way the fix is a deliberate one with a test run
-  behind it, not a hand-edit.
-
 ## Not now
 
 - Tutor plan.

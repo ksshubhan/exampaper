@@ -49,8 +49,8 @@ ENV PYTHONUNBUFFERED=1 \
 WORKDIR /app
 
 # Requirements before the source, for the same layer-caching reason as above.
-COPY backend/requirements.txt backend/requirements.txt
-RUN pip install --no-cache-dir -r backend/requirements.txt
+COPY backend/requirements.lock backend/requirements.lock
+RUN pip install --no-cache-dir -r backend/requirements.lock
 
 # Headless rendering uses Chromium's headless shell; --with-deps pulls the
 # system libraries it needs. Installed as root into PLAYWRIGHT_BROWSERS_PATH,

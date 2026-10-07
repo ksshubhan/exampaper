@@ -1,3 +1,5 @@
+# Edit the floors here, then regenerate the lock the image installs from:
+#   uv pip compile backend/requirements.txt --python-version 3.14 --python-platform x86_64-unknown-linux-gnu --output-file backend/requirements.lock
 fastapi>=0.115
 uvicorn[standard]>=0.30
 pydantic>=2.0
