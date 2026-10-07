@@ -22,6 +22,7 @@ import os
 import time
 import unittest
 import uuid
+from datetime import datetime, timezone
 from typing import Any
 
 import sqlalchemy as sa
@@ -96,15 +97,57 @@ def checkout_session_object(
     return obj
 
 
+#: 7 November 2026, 09:00 UTC — a period end to assert against.
+PERIOD_END = 1794042000
+#: A month later, for the "latest item wins" case.
+LATER_PERIOD_END = 1796634000
+
+#: Tells the fixture below to leave a field out altogether, so that passing
+#: `None` can mean the explicit JSON `null` Stripe sends on a renewal.
+OMIT = object()
+
+
 def subscription_object(
-    status: str, subscription_id: str = SUBSCRIPTION_ID
+    status: str,
+    subscription_id: str = SUBSCRIPTION_ID,
+    *,
+    cancel_at: Any = OMIT,
+    cancel_at_period_end: Any = OMIT,
+    item_period_ends: Any = OMIT,
+    period_end: Any = OMIT,
 ) -> dict[str, Any]:
-    return {
+    """A subscription, with the cancel fields present only when asked for.
+
+    `item_period_ends` puts a `current_period_end` on each entry of
+    `items.data[]`, where current Stripe API versions keep it; `period_end` puts
+    a single one at the top level, where older versions kept it. A webhook
+    delivery uses the endpoint's API version, so a test exists for each.
+    """
+    obj: dict[str, Any] = {
         "id": subscription_id,
         "object": "subscription",
         "status": status,
         "customer": CUSTOMER_ID,
     }
+    if cancel_at is not OMIT:
+        obj["cancel_at"] = cancel_at
+    if cancel_at_period_end is not OMIT:
+        obj["cancel_at_period_end"] = cancel_at_period_end
+    if item_period_ends is not OMIT:
+        obj["items"] = {
+            "object": "list",
+            "data": [
+                {"id": f"si_test_{i}", "current_period_end": end}
+                for i, end in enumerate(item_period_ends)
+            ],
+        }
+    if period_end is not OMIT:
+        obj["current_period_end"] = period_end
+    return obj
+
+
+def utc(timestamp: int) -> datetime:
+    return datetime.fromtimestamp(timestamp, tz=timezone.utc)
 
 
 @unittest.skipUnless(
@@ -202,6 +245,7 @@ class BillingTestCase(unittest.TestCase):
         stripe_customer_id: str | None = None,
         stripe_subscription_id: str | None = None,
         subscription_status: str | None = None,
+        cancel_at: datetime | None = None,
     ) -> User:
         with self.Session() as s:
             user = User(
@@ -211,6 +255,7 @@ class BillingTestCase(unittest.TestCase):
                 stripe_customer_id=stripe_customer_id,
                 stripe_subscription_id=stripe_subscription_id,
                 subscription_status=subscription_status,
+                cancel_at=cancel_at,
             )
             s.add(user)
             s.commit()
@@ -569,13 +614,101 @@ class TestWebhookCheckoutCompleted(BillingTestCase):
         self.assertEqual(self.row(user).plan, PLAN_FREE)
 
 
+class TestSubscriptionCancelAt(unittest.TestCase):
+    """`subscription_cancel_at` on its own. No database, no Stripe, no HTTP."""
+
+    def test_an_explicit_cancel_at_is_read_as_utc(self) -> None:
+        obj = subscription_object("active", cancel_at=PERIOD_END)
+        self.assertEqual(billing.subscription_cancel_at(obj), utc(PERIOD_END))
+
+    def test_an_explicit_cancel_at_beats_the_period_end(self) -> None:
+        """Stripe sends both when a cancel is set for a specific date."""
+        obj = subscription_object(
+            "active",
+            cancel_at=PERIOD_END,
+            cancel_at_period_end=True,
+            item_period_ends=[LATER_PERIOD_END],
+        )
+        self.assertEqual(billing.subscription_cancel_at(obj), utc(PERIOD_END))
+
+    def test_period_end_comes_from_the_item(self) -> None:
+        obj = subscription_object(
+            "active", cancel_at_period_end=True, item_period_ends=[PERIOD_END]
+        )
+        self.assertEqual(billing.subscription_cancel_at(obj), utc(PERIOD_END))
+
+    def test_period_end_falls_back_to_the_top_level(self) -> None:
+        """An older API version on the webhook endpoint sends only this."""
+        obj = subscription_object(
+            "active", cancel_at_period_end=True, period_end=PERIOD_END
+        )
+        self.assertEqual(billing.subscription_cancel_at(obj), utc(PERIOD_END))
+
+    def test_the_item_wins_over_the_top_level(self) -> None:
+        obj = subscription_object(
+            "active",
+            cancel_at_period_end=True,
+            item_period_ends=[LATER_PERIOD_END],
+            period_end=PERIOD_END,
+        )
+        self.assertEqual(billing.subscription_cancel_at(obj), utc(LATER_PERIOD_END))
+
+    def test_the_latest_item_wins(self) -> None:
+        """Several items: the subscription runs until the last of them ends."""
+        obj = subscription_object(
+            "active",
+            cancel_at_period_end=True,
+            item_period_ends=[PERIOD_END, LATER_PERIOD_END],
+        )
+        self.assertEqual(billing.subscription_cancel_at(obj), utc(LATER_PERIOD_END))
+
+    def test_no_cancel_scheduled_is_none(self) -> None:
+        for obj in (
+            subscription_object("active"),
+            subscription_object("active", cancel_at=None, cancel_at_period_end=False),
+            subscription_object(
+                "active", cancel_at_period_end=False, item_period_ends=[PERIOD_END]
+            ),
+        ):
+            with self.subTest(obj=obj):
+                self.assertIsNone(billing.subscription_cancel_at(obj))
+
+    def test_garbage_is_none_and_never_raises(self) -> None:
+        cases = [
+            subscription_object("active", cancel_at="soon"),
+            subscription_object("active", cancel_at=-1),
+            subscription_object("active", cancel_at=0),
+            subscription_object("active", cancel_at=True),
+            subscription_object("active", cancel_at=PERIOD_END * 10**6),
+            subscription_object("active", cancel_at_period_end=True),
+            subscription_object("active", cancel_at_period_end=True, period_end="soon"),
+            subscription_object(
+                "active", cancel_at_period_end=True, item_period_ends=[]
+            ),
+            subscription_object(
+                "active", cancel_at_period_end=True, item_period_ends=[None, "soon"]
+            ),
+            subscription_object("active", cancel_at_period_end="yes"),
+            {"items": "not a list"},
+            {"cancel_at_period_end": True, "items": {"data": "not a list"}},
+            {"cancel_at_period_end": True, "items": {"data": ["not a dict"]}},
+            {},
+            None,
+            "not an object",
+        ]
+        for obj in cases:
+            with self.subTest(obj=obj):
+                self.assertIsNone(billing.subscription_cancel_at(obj))
+
+
 class TestWebhookSubscriptionUpdated(BillingTestCase):
-    def subscriber(self) -> User:
+    def subscriber(self, cancel_at: datetime | None = None) -> User:
         return self.given_user(
             plan=PLAN_MONTHLY,
             stripe_customer_id=CUSTOMER_ID,
             stripe_subscription_id=SUBSCRIPTION_ID,
             subscription_status="active",
+            cancel_at=cancel_at,
         )
 
     def test_active_keeps_the_monthly_plan(self) -> None:
@@ -619,6 +752,93 @@ class TestWebhookSubscriptionUpdated(BillingTestCase):
         with self.assertLogs("app.billing", level="WARNING"):
             self.assertEqual(self.deliver(payload).status_code, 200)
 
+    def test_a_scheduled_cancel_is_stored_and_keeps_the_plan(self) -> None:
+        """Cancelled but paid up: still `monthly`, with the end date recorded."""
+        user = self.subscriber()
+        payload = event_payload(
+            "customer.subscription.updated",
+            subscription_object(
+                "active", cancel_at_period_end=True, item_period_ends=[PERIOD_END]
+            ),
+        )
+        self.assertEqual(self.deliver(payload).status_code, 200)
+        fresh = self.row(user)
+        self.assertEqual(fresh.plan, PLAN_MONTHLY)
+        self.assertEqual(fresh.subscription_status, "active")
+        self.assertEqual(fresh.cancel_at, utc(PERIOD_END))
+
+    def test_a_scheduled_cancel_from_an_older_api_version(self) -> None:
+        """Only a top-level `current_period_end`: same outcome."""
+        user = self.subscriber()
+        payload = event_payload(
+            "customer.subscription.updated",
+            subscription_object(
+                "active", cancel_at_period_end=True, period_end=PERIOD_END
+            ),
+        )
+        self.assertEqual(self.deliver(payload).status_code, 200)
+        fresh = self.row(user)
+        self.assertEqual(fresh.plan, PLAN_MONTHLY)
+        self.assertEqual(fresh.cancel_at, utc(PERIOD_END))
+
+    def test_an_explicit_cancel_at_is_stored(self) -> None:
+        user = self.subscriber()
+        payload = event_payload(
+            "customer.subscription.updated",
+            subscription_object("active", cancel_at=PERIOD_END),
+        )
+        self.deliver(payload)
+        self.assertEqual(self.row(user).cancel_at, utc(PERIOD_END))
+
+    def test_renewing_clears_the_cancel_date(self) -> None:
+        """The Customer Portal's "renew" button sends exactly this."""
+        user = self.subscriber(cancel_at=utc(PERIOD_END))
+        payload = event_payload(
+            "customer.subscription.updated",
+            subscription_object(
+                "active",
+                cancel_at=None,
+                cancel_at_period_end=False,
+                item_period_ends=[PERIOD_END],
+            ),
+        )
+        self.assertEqual(self.deliver(payload).status_code, 200)
+        fresh = self.row(user)
+        self.assertEqual(fresh.plan, PLAN_MONTHLY)
+        self.assertIsNone(fresh.cancel_at)
+
+    def test_garbage_cancel_fields_leave_no_date_and_still_return_200(self) -> None:
+        """A date we only display must never cost us the status in the same event."""
+        user = self.subscriber(cancel_at=utc(PERIOD_END))
+        payload = event_payload(
+            "customer.subscription.updated",
+            subscription_object(
+                "active", cancel_at="whenever", cancel_at_period_end=True
+            ),
+        )
+        self.assertEqual(self.deliver(payload).status_code, 200)
+        fresh = self.row(user)
+        self.assertEqual(fresh.plan, PLAN_MONTHLY)
+        self.assertEqual(fresh.subscription_status, "active")
+        self.assertIsNone(fresh.cancel_at)
+
+    def test_a_negative_cancel_at_is_ignored(self) -> None:
+        user = self.subscriber(cancel_at=utc(PERIOD_END))
+        payload = event_payload(
+            "customer.subscription.updated", subscription_object("active", cancel_at=-1)
+        )
+        self.assertEqual(self.deliver(payload).status_code, 200)
+        self.assertIsNone(self.row(user).cancel_at)
+
+    def test_a_missing_items_list_is_ignored(self) -> None:
+        user = self.subscriber(cancel_at=utc(PERIOD_END))
+        payload = event_payload(
+            "customer.subscription.updated",
+            subscription_object("active", cancel_at_period_end=True),
+        )
+        self.assertEqual(self.deliver(payload).status_code, 200)
+        self.assertIsNone(self.row(user).cancel_at)
+
 
 class TestWebhookSubscriptionDeleted(BillingTestCase):
     def test_cancellation_returns_the_account_to_free(self) -> None:
@@ -640,6 +860,24 @@ class TestWebhookSubscriptionDeleted(BillingTestCase):
             CUSTOMER_ID,
             "keep the customer id so a resubscribe reuses it",
         )
+
+    def test_cancellation_clears_a_scheduled_cancel_date(self) -> None:
+        """It has stopped, so there is no date it is going to stop on."""
+        user = self.given_user(
+            plan=PLAN_MONTHLY,
+            stripe_customer_id=CUSTOMER_ID,
+            stripe_subscription_id=SUBSCRIPTION_ID,
+            subscription_status="active",
+            cancel_at=utc(PERIOD_END),
+        )
+        payload = event_payload(
+            "customer.subscription.deleted",
+            subscription_object("canceled", cancel_at=PERIOD_END),
+        )
+        self.assertEqual(self.deliver(payload).status_code, 200)
+        fresh = self.row(user)
+        self.assertEqual(fresh.plan, PLAN_FREE)
+        self.assertIsNone(fresh.cancel_at)
 
 
 class TestWebhookIdempotency(BillingTestCase):
@@ -736,6 +974,47 @@ class TestPlanReachesTheRestOfTheApp(BillingTestCase):
         self.deliver(payload)
         body = self.client.get("/api/me", headers=self.headers(user)).json()
         self.assertEqual(body["plan"], PLAN_MONTHLY)
+
+    def test_me_reports_no_cancel_date_by_default(self) -> None:
+        user = self.given_user()
+        body = self.client.get("/api/me", headers=self.headers(user)).json()
+        self.assertIsNone(body["cancel_at"])
+
+    def test_me_reports_the_cancel_date_as_iso_with_an_offset(self) -> None:
+        user = self.given_user(
+            plan=PLAN_MONTHLY,
+            stripe_customer_id=CUSTOMER_ID,
+            stripe_subscription_id=SUBSCRIPTION_ID,
+            subscription_status="active",
+        )
+        payload = event_payload(
+            "customer.subscription.updated",
+            subscription_object(
+                "active", cancel_at_period_end=True, item_period_ends=[PERIOD_END]
+            ),
+            event_id="evt_me_cancel",
+        )
+        self.deliver(payload)
+        body = self.client.get("/api/me", headers=self.headers(user)).json()
+        self.assertEqual(body["plan"], PLAN_MONTHLY)
+        self.assertEqual(
+            datetime.fromisoformat(body["cancel_at"]).astimezone(timezone.utc),
+            utc(PERIOD_END),
+        )
+        self.assertIsNotNone(datetime.fromisoformat(body["cancel_at"]).tzinfo)
+
+    def test_checkout_clears_a_stale_cancel_date(self) -> None:
+        """A resubscribe must not show the old subscription's end date."""
+        user = self.given_user(cancel_at=utc(PERIOD_END))
+        payload = event_payload(
+            "checkout.session.completed",
+            checkout_session_object(str(self.row(user).id)),
+            event_id="evt_me_resubscribe",
+        )
+        self.deliver(payload)
+        body = self.client.get("/api/me", headers=self.headers(user)).json()
+        self.assertEqual(body["plan"], PLAN_MONTHLY)
+        self.assertIsNone(body["cancel_at"])
 
     def test_a_subscriber_cannot_open_checkout_twice(self) -> None:
         user = self.given_user()

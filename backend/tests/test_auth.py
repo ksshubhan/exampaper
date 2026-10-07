@@ -191,6 +191,7 @@ class TestValidToken(AuthTestCase):
             {
                 "email",
                 "plan",
+                "cancel_at",
                 "total_generations",
                 "day_generations",
                 "free_limit",
@@ -199,6 +200,7 @@ class TestValidToken(AuthTestCase):
         )
         self.assertEqual(body["email"], "shape@example.com")
         self.assertEqual(body["plan"], "free")
+        self.assertIsNone(body["cancel_at"])
         self.assertEqual(body["total_generations"], 0)
         self.assertEqual(body["day_generations"], 0)
         self.assertEqual(body["free_limit"], 1)

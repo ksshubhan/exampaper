@@ -92,6 +92,8 @@ def me(user: User = Depends(get_current_user)) -> dict:
     return {
         "email": user.email,
         "plan": user.plan,
+        # ISO-8601 with an offset, or null when no cancel is scheduled.
+        "cancel_at": user.cancel_at.isoformat() if user.cancel_at else None,
         "total_generations": user.total_generations,
         "day_generations": user.day_generations,
         "free_limit": settings.free_generation_limit,

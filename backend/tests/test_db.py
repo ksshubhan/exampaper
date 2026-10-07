@@ -144,6 +144,7 @@ class TestMigrationMatchesModels(unittest.TestCase):
                 "email",
                 "plan",
                 "subscription_status",
+                "cancel_at",
                 "stripe_customer_id",
                 "stripe_subscription_id",
                 "total_generations",
@@ -161,8 +162,16 @@ class TestMigrationMatchesModels(unittest.TestCase):
             ["id", "received_at"],
         )
 
+    def test_cancel_at_arrives_as_an_alter(self) -> None:
+        """0004 must ALTER, not be folded back into the already-applied 0001."""
+        self.assertIn(
+            "ALTER TABLE users ADD COLUMN cancel_at TIMESTAMP WITH TIME ZONE",
+            self.sql,
+        )
+
     def test_downgrade_is_reversible(self) -> None:
         sql = _downgrade_sql()
+        self.assertIn("DROP COLUMN cancel_at", sql)
         self.assertIn("DROP COLUMN render_date", sql)
         self.assertIn("DROP COLUMN day_renders", sql)
         self.assertIn("DROP COLUMN attempt_date", sql)
@@ -235,6 +244,7 @@ class TestUserRows(unittest.TestCase):
             self.assertEqual(user.total_generations, 0)
             self.assertEqual(user.day_generations, 0)
             self.assertIsNone(user.day_date)
+            self.assertIsNone(user.cancel_at)
             self.assertIsNone(user.stripe_customer_id)
             self.assertIsNotNone(user.created_at)
             self.assertIsNotNone(user.created_at.tzinfo)

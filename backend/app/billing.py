@@ -17,6 +17,7 @@ from __future__ import annotations
 import json
 import logging
 import uuid
+from datetime import datetime, timezone
 from typing import Any, Callable
 
 import stripe
@@ -209,6 +210,65 @@ def object_id(value: Any) -> str | None:
     return str(value) if isinstance(value, str) and value.strip() else None
 
 
+def epoch_utc(value: Any) -> datetime | None:
+    """A Stripe Unix timestamp as an aware UTC datetime, or `None` if it is not one.
+
+    `bool` is rejected explicitly because it is an `int` in Python: a
+    `cancel_at_period_end` that found its way into a timestamp field must not
+    become 1970-01-01. Zero and negatives go too — Stripe does not send them,
+    so they are corruption rather than a date.
+    """
+    if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+        return None
+    try:
+        return datetime.fromtimestamp(value, tz=timezone.utc)
+    except (OSError, OverflowError, ValueError):
+        return None
+
+
+def subscription_cancel_at(obj: Any) -> datetime | None:
+    """When a scheduled cancel takes effect, or `None` if none is scheduled.
+
+    Stripe says the same thing two ways, and which one arrives depends on the
+    API version pinned on the **webhook endpoint** — not on the version this
+    library was built against — so both shapes have to work:
+
+    * `cancel_at`: an explicit timestamp. Takes precedence when present.
+    * `cancel_at_period_end: true`: it stops when the paid-up period ends.
+      Current API versions carry `current_period_end` on each entry of
+      `items.data[]`; older ones put a single one at the top level. With
+      several items the subscription runs until the last of them ends.
+
+    Never raises. A missing or malformed field reads as "no cancel scheduled":
+    this is a date we display, and a webhook that 500s over it would be retried
+    for days while the status it arrived with — the thing entitlement reads —
+    went unrecorded.
+    """
+    if not isinstance(obj, dict):
+        return None
+
+    explicit = epoch_utc(obj.get("cancel_at"))
+    if explicit is not None:
+        return explicit
+
+    if obj.get("cancel_at_period_end") is not True:
+        return None
+
+    items = obj.get("items")
+    data = items.get("data") if isinstance(items, dict) else None
+    ends: list[datetime] = []
+    if isinstance(data, list):
+        for item in data:
+            if not isinstance(item, dict):
+                continue
+            end = epoch_utc(item.get("current_period_end"))
+            if end is not None:
+                ends.append(end)
+    if ends:
+        return max(ends)
+    return epoch_utc(obj.get("current_period_end"))
+
+
 def user_by_reference(db: Session, reference: Any) -> User | None:
     """The user a `client_reference_id` points at, if it points at one."""
     if not isinstance(reference, str) or not reference.strip():
@@ -269,6 +329,8 @@ def handle_checkout_completed(db: Session, obj: dict[str, Any]) -> None:
 
     user.plan = PLAN_MONTHLY
     user.subscription_status = STATUS_ACTIVE
+    # A fresh subscription has no cancel scheduled, whatever the last one left.
+    user.cancel_at = None
     logger.info("Granted the monthly plan to %s", user.email)
 
 
@@ -286,6 +348,8 @@ def handle_subscription_updated(db: Session, obj: dict[str, Any]) -> None:
     new_status = obj.get("status")
     user.subscription_status = new_status if isinstance(new_status, str) else None
     user.plan = PLAN_MONTHLY if new_status in ENTITLING_STATUSES else PLAN_FREE
+    # Display only, and set from every update so that renewing clears it.
+    user.cancel_at = subscription_cancel_at(obj)
 
 
 def handle_subscription_deleted(db: Session, obj: dict[str, Any]) -> None:
@@ -301,6 +365,8 @@ def handle_subscription_deleted(db: Session, obj: dict[str, Any]) -> None:
 
     user.plan = PLAN_FREE
     user.subscription_status = STATUS_CANCELED
+    # It has stopped; there is no longer a date it is going to stop on.
+    user.cancel_at = None
 
 
 #: Event types we act on. Everything else is acknowledged and dropped.

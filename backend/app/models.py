@@ -42,6 +42,11 @@ class User(Base):
     )
     #: Raw Stripe subscription status, stored verbatim.
     subscription_status: Mapped[str | None] = mapped_column(Text, nullable=True)
+    #: When a still-active subscription stops, if a cancel is scheduled. Display
+    #: only — entitlement follows `subscription_status`, never this.
+    cancel_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     stripe_customer_id: Mapped[str | None] = mapped_column(
         Text, nullable=True, unique=True
     )
