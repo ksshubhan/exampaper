@@ -292,12 +292,20 @@ def mount_frontend(target: FastAPI, dist: Path) -> bool:
         if request.method not in ("GET", "HEAD"):
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
 
-        resolved = _inside(dist, spa_path) if spa_path else None
+        # A path that leaves `dist` is refused outright, before the question
+        # of whether it names a file is even asked. It is not something the
+        # client router could have meant, and answering it with `index.html`
+        # and a 200 would report a traversal attempt as a working page.
+        resolved = None
+        if spa_path:
+            resolved = _inside(dist, spa_path)
+            if resolved is None:
+                raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
 
         # Hashed bundle: cacheable forever, and a miss is a 404 rather than
         # the index, because a build never asks for an asset that isn't there.
         if spa_path.startswith("assets/"):
-            if resolved is None or not resolved.is_file():
+            if not resolved.is_file():
                 raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
             return FileResponse(resolved, headers={"Cache-Control": IMMUTABLE})
 
