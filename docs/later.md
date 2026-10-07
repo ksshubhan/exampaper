@@ -36,25 +36,6 @@ are *not* here, because those must ship before the site is public.
 Chores, not decisions. None of them block launch; all of them are things a
 reader of this repo would otherwise trip over.
 
-- **Remove the stray root files `code.py` and `index.html`.** Both are tracked
-  and neither belongs: `code.py` is an unrelated LeetCode two-sum scratch file,
-  and the root `index.html` is a pre-Vite Tailwind-CDN scaffold from the
-  initial commit whose body is an empty canvas div, superseded by
-  `frontend/index.html` and the real SPA. Nothing imports or serves either —
-  the image copies only `backend/` and `frontend/dist`, and every `index.html`
-  reference in the backend and docs means the built one in `dist` — so
-  deleting them is safe.
-
-- **The README is stale about how questions are made.** It says an LLM
-  (Anthropic API) fills the question slots, lists the Anthropic API among the
-  backend stack, and tells a new reader to `export ANTHROPIC_API_KEY=...` as a
-  setup step. Generation is deterministic Python plus SymPy verification;
-  nothing deployed calls a model, which is why `ANTHROPIC_API_KEY` is a fence
-  in `docs/deploy.md`. As written the README asks for a key that does nothing
-  and describes an architecture the code does not have. Rewrite those lines
-  (README.md: the Generate/Verify steps, the stack table, and the setup
-  prerequisites) to describe the generators as they are.
-
 - **Python dependencies are unpinned; consider a lock file.**
   `backend/requirements.txt` is all floors (`fastapi>=0.115`, `sympy>=1.13`,
   `playwright>=1.40`, …), so the image resolves whatever is newest at build
