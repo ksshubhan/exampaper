@@ -2,6 +2,7 @@ import type { ReactNode } from 'react'
 import { Link } from 'react-router-dom'
 import BackLink from '../components/BackLink'
 import { useCheckout } from '../hooks/useCheckout'
+import { useMe } from '../hooks/useMe'
 import { PRICE_MONTHLY_DISPLAY, PRICE_MONTHLY_PERIOD } from '../lib/billing'
 
 /** Public: anyone can read the plans. Subscribing asks for sign-in first. */
@@ -66,8 +67,20 @@ const FAQ: { q: string; a: ReactNode }[] = [
   },
 ]
 
+/** Same shape as the card buttons, for a state with nowhere to go. */
+const DONE_BOX =
+  'block rounded-xl border border-[var(--border)] px-5 py-3 text-center text-sm font-semibold text-[var(--muted)]'
+
+const SECONDARY_BUTTON =
+  'block w-full rounded-xl border border-[var(--border)] px-5 py-3 text-center text-sm font-semibold text-[var(--text)] transition hover:bg-[var(--hover)]'
+
 export default function Pricing() {
   const { start, busy, error } = useCheckout()
+  // null while /api/me is loading, and for signed-out or failed — both get
+  // today's buttons.
+  const me = useMe()
+  const subscribed = me?.plan === 'monthly'
+  const freeUsed = me != null && !subscribed && me.total_generations >= me.free_limit
 
   return (
     <div className="mx-auto max-w-3xl px-5 py-8">
@@ -86,12 +99,18 @@ export default function Pricing() {
           period="one paper"
           features={FREE_FEATURES}
         >
-          <Link
-            to="/"
-            className="block rounded-xl border border-[var(--border)] px-5 py-3 text-center text-sm font-semibold text-[var(--text)] transition hover:bg-[var(--hover)]"
-          >
-            Get your free paper
-          </Link>
+          {subscribed ? (
+            <p className={DONE_BOX}>Included in Unlimited</p>
+          ) : freeUsed ? (
+            <p className={DONE_BOX}>Free paper used</p>
+          ) : (
+            <Link
+              to="/"
+              className="block rounded-xl border border-[var(--border)] px-5 py-3 text-center text-sm font-semibold text-[var(--text)] transition hover:bg-[var(--hover)]"
+            >
+              Get your free paper
+            </Link>
+          )}
         </PlanCard>
 
         {/* Unlimited */}
@@ -102,22 +121,30 @@ export default function Pricing() {
           features={UNLIMITED_FEATURES}
           highlight
         >
-          <button
-            type="button"
-            onClick={start}
-            disabled={busy}
-            className="w-full rounded-xl bg-[var(--accent)] px-5 py-3 text-sm font-semibold text-[var(--accent-text)] transition hover:opacity-90 disabled:opacity-50"
-          >
-            {busy ? 'Opening payment…' : 'Subscribe'}
-          </button>
-          {error && (
-            <p role="alert" className="mt-2 text-sm text-red-500">
-              {error}
-            </p>
+          {subscribed ? (
+            <Link to="/account" className={SECONDARY_BUTTON}>
+              Manage your plan
+            </Link>
+          ) : (
+            <>
+              <button
+                type="button"
+                onClick={start}
+                disabled={busy}
+                className="w-full rounded-xl bg-[var(--accent)] px-5 py-3 text-sm font-semibold text-[var(--accent-text)] transition hover:opacity-90 disabled:opacity-50"
+              >
+                {busy ? 'Opening payment…' : 'Subscribe'}
+              </button>
+              {error && (
+                <p role="alert" className="mt-2 text-sm text-red-500">
+                  {error}
+                </p>
+              )}
+              <p className="mt-2 text-center text-xs text-[var(--muted)]">
+                Secure payment by Stripe
+              </p>
+            </>
           )}
-          <p className="mt-2 text-center text-xs text-[var(--muted)]">
-            Secure payment by Stripe
-          </p>
         </PlanCard>
       </div>
 
