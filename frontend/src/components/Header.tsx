@@ -1,5 +1,5 @@
 import type { ComponentType, SVGProps } from 'react'
-import { Link, useLocation } from 'react-router-dom'
+import { Link, useLocation, useNavigate } from 'react-router-dom'
 import { SignInButton, SignedIn, SignedOut, UserButton } from '@clerk/clerk-react'
 import { PRACTICE_PATH } from '../data/catalog'
 import { useTheme } from '../hooks/useTheme'
@@ -39,6 +39,7 @@ const NAV: NavItem[] = [
 export default function Header() {
   const { pathname } = useLocation()
   const { theme, toggle } = useTheme()
+  const navigate = useNavigate()
 
   return (
     <header className="sticky top-0 z-20 border-b border-[var(--border)] bg-[var(--surface)]">
@@ -62,7 +63,7 @@ export default function Header() {
           <span className="flex h-8 w-8 items-center justify-center rounded-lg border border-[var(--border)] text-[var(--text)]">
             <BracketsIcon className="h-4 w-4" />
           </span>
-          <span className="text-lg font-semibold tracking-tight">ExamPaper</span>
+          <span className="hidden text-lg font-semibold tracking-tight sm:inline">ExamPaper</span>
         </Link>
 
         {/* Nav pills */}
@@ -75,7 +76,7 @@ export default function Header() {
                 to={to}
                 aria-current={active ? 'page' : undefined}
                 className={
-                  'flex items-center gap-2 whitespace-nowrap rounded-full px-3.5 py-2 text-sm font-medium transition ' +
+                  'flex items-center gap-2 whitespace-nowrap rounded-full px-2.5 py-2 text-sm font-medium transition sm:px-3.5 ' +
                   (active
                     ? 'bg-[var(--accent)] text-[var(--accent-text)]'
                     : 'text-[var(--text)] hover:bg-[var(--hover)]')
@@ -103,7 +104,19 @@ export default function Header() {
         <SignedIn>
           <div className="ml-1 flex items-center gap-2">
             <PlanPill />
-            <UserButton />
+            {/* "Plan and billing" goes to our own /account, in-app; Clerk's
+                own items stay after it. */}
+            <UserButton>
+              <UserButton.MenuItems>
+                <UserButton.Action
+                  label="Plan and billing"
+                  labelIcon={<PricingIcon className="h-4 w-4" />}
+                  onClick={() => navigate('/account')}
+                />
+                <UserButton.Action label="manageAccount" />
+                <UserButton.Action label="signOut" />
+              </UserButton.MenuItems>
+            </UserButton>
           </div>
         </SignedIn>
       </div>

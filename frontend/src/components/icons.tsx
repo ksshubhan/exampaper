@@ -120,3 +120,11 @@ export function ChevronDownIcon(p: SVGProps<SVGSVGElement>) {
     </Svg>
   )
 }
+
+export function ChevronRightIcon(p: SVGProps<SVGSVGElement>) {
+  return (
+    <Svg {...p}>
+      <path d="m9 6 6 6-6 6" />
+    </Svg>
+  )
+}
