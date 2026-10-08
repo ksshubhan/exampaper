@@ -6,21 +6,19 @@ are *not* here, because those must ship before the site is public.
 
 ## Before launch
 
-- **Privacy policy page, then publish the Google OAuth app.** Google will not
-  move the ExamPaper OAuth app out of "Testing" until its Branding page links
-  a privacy policy on `sshubhan.com`; until then only listed test users can
-  use Google sign-in (email magic link works for everyone). UK GDPR expects a
-  privacy notice anyway before taking real payments. Hand-written, like the
-  terms page: what is collected (email, name, generation counts, plan),
-  why, processors (Clerk, Stripe, Railway, Neon), retention, deletion, contact.
-  Then add the link in Google Auth Platform → Branding and Publish app.
-
 - **`/pricing` offers "Get your free paper" to an account that has used it.**
   The header chip already says "Free paper used"; the Free card should agree.
   Same class of display issue as the `/account` "3 of 1" bug.
 
 ## Not now
 
+- **Delete accounts unused for 2 years.** `docs/privacy.md` promises it. Nothing
+  does it yet: check Clerk's last-sign-in dates by hand (first due Oct 2028),
+  or build it.
+- Self-host Lato, so no visitor IP goes to Google Fonts (then edit the policy).
+- Self-serve account deletion / a Clerk `user.deleted` webhook (deletion is by
+  email request for now).
+- Check whether the ICO data protection fee applies before taking real payments.
 - Tutor plan.
 - Paper packs / credits.
 - Live-mode Stripe keys and a production webhook endpoint (do at deploy).
