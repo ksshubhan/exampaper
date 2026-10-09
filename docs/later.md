@@ -12,10 +12,10 @@ are *not* here, because those must ship before the site is public.
 - Self-host Lato, so no visitor IP goes to Google Fonts (then edit the policy).
 - Self-serve account deletion / a Clerk `user.deleted` webhook (deletion is by
   email request for now).
-- Check whether the ICO data protection fee applies before taking real payments.
 - Tutor plan.
 - Paper packs / credits.
 - Live-mode Stripe keys and a production webhook endpoint (do at deploy).
-- Terms of service page with fair-use + no-redistribution clause (hand-written,
-  not generated).
 - Usage anomaly checks.
+- Sign-in button on phones for signed-out visitors (the header one is hidden
+  below `sm`). New users are covered by Generate / Subscribe / `/account`;
+  only a returning user who just wants to sign in has no direct route.

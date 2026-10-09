@@ -15,6 +15,13 @@ export default function App() {
         >
           Privacy
         </Link>
+        <span className="px-3" />
+        <Link
+          to="/terms"
+          className="transition-colors hover:text-[var(--text)]"
+        >
+          Terms
+        </Link>
       </footer>
     </div>
   )
