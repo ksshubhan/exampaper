@@ -287,6 +287,21 @@ Done when: one real subscription with your own card → `/account` shows
 Unlimited → cancel in the portal → plan stays Unlimited and shows the cancel
 date → refund yourself in the Stripe dashboard.
 
+**Done 9 Oct 2026.** One real £5 subscription → `/account` Unlimited →
+cancelled in the portal → stayed Unlimited with `Cancels on 9 November 2026`
+→ refunded in full in the dashboard. Two differences from the steps above:
+
+- `STRIPE_SECRET_KEY` is a **restricted** key (`rk_live_…`, "Full access –
+  except sensitive operations"), not `sk_live_…`. The code only creates
+  Checkout and portal sessions (`backend/app/billing.py`), and webhook
+  signatures are checked locally. If a Stripe call ever fails with a
+  permission error, swap in a full key.
+- **Neon cleanup before the first live checkout.** `users` rows still held
+  test-mode Stripe IDs, and `checkout()` reuses `stripe_customer_id` (→ 503
+  "No such customer"). Set `stripe_customer_id`, `stripe_subscription_id`,
+  `subscription_status` and `cancel_at` to NULL on rows with `plan = 'free'`
+  (2 rows, both mine). Any future switch between test and live needs the same.
+
 ---
 
 ## Deploy checklist → section
