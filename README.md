@@ -1,6 +1,6 @@
 # ExamPaper
 
-Generates original, exam-style GCSE Higher Mathematics practice papers (Edexcel specification) with mark schemes, exported as print-ready PDFs.
+Generates original, exam-style practice papers with mark schemes, exported as print-ready PDFs. It is built to cover GCSE and A-level subjects; GCSE Higher Mathematics (Edexcel specification) is the first subject available.
 
 ## How it works
 
